@@ -13,9 +13,13 @@ mod snapshot;
 const COLLAPSED: (f64, f64) = (272.0, 122.0);
 const EXPANDED: (f64, f64) = (640.0, 510.0);
 
+/// Returns a fresh usage snapshot. `refresh_ms` is the user's UI refresh
+/// interval — the backend cache TTL is tied to this so each UI poll gets
+/// data at most that old. Floor 30s to avoid hammering the API if a user
+/// picks an extreme value.
 #[tauri::command]
-fn get_snapshot() -> Result<snapshot::UsageSnapshot, String> {
-    snapshot::build().map_err(|e| e.to_string())
+fn get_snapshot(refresh_ms: Option<u64>) -> Result<snapshot::UsageSnapshot, String> {
+    snapshot::build(refresh_ms.unwrap_or(120_000)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -94,7 +98,7 @@ pub fn run() {
             let _ = window.show();
 
             // Boot diagnostic — both sources should now be LIVE
-            match snapshot::build() {
+            match snapshot::build(120_000) {
                 Ok(snap) => {
                     let cl = snap.claude.as_ref()
                         .map(|c| format!("5h={:.0}% wk={:.0}%", c.five_hour.used_percent, c.weekly.used_percent))

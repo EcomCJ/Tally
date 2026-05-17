@@ -7,15 +7,13 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use walkdir::WalkDir;
 
-// Cache the last successful /api/oauth/usage result so we don't hammer the
-// endpoint (it 429s if called too often). Persisted to disk so restarts
-// don't reset to 0%. Survives transient failures and rate limits.
-const USAGE_CACHE_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(60);
-// When the cached resets_at is already in the past (window has expired and
-// we're waiting on the server to publish a fresh value), bypass the 60s TTL
-// and try fresh on every snapshot call — but throttle to no faster than this
-// interval so we don't trigger 429s during the dead-zone.
-const PAST_RESET_RETRY_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(10);
+// Minimum cache TTL — hard floor so the API isn't hammered even if the user
+// sets the UI refresh to something extreme. Anthropic rate-limits this
+// endpoint aggressively (429s after enough hits/hour).
+const MIN_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+// On 429, refuse to retry for this long. The endpoint's window is opaque so
+// we just back off hard regardless of user refresh setting.
+const RATE_LIMIT_BACKOFF: std::time::Duration = std::time::Duration::from_secs(900);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct DiskCache {
@@ -29,6 +27,11 @@ struct DiskCache {
 struct CacheEntry {
     fetched_at: Instant,
     value: ClaudeLiveLimits,
+    /// Instant before which we will not attempt another HTTP call. Set when
+    /// the server returns 429, cleared on successful fetch.
+    cooldown_until: Option<Instant>,
+    /// Last fetch error message, for UI surfacing.
+    last_error: Option<String>,
 }
 
 fn cache() -> &'static Mutex<Option<CacheEntry>> {
@@ -37,7 +40,7 @@ fn cache() -> &'static Mutex<Option<CacheEntry>> {
         // Seed from disk on first access.
         let seed = read_disk_cache().map(|d| CacheEntry {
             // Mark as "old enough to refresh" so first call still tries fresh.
-            fetched_at: Instant::now() - USAGE_CACHE_MIN_AGE - std::time::Duration::from_secs(1),
+            fetched_at: Instant::now() - std::time::Duration::from_secs(3600),
             value: ClaudeLiveLimits {
                 five_hour_percent: d.five_hour_percent,
                 five_hour_resets_at: d.five_hour_resets_at,
@@ -46,6 +49,8 @@ fn cache() -> &'static Mutex<Option<CacheEntry>> {
                 sub_quotas: Vec::new(),
                 extra_usage: None,
             },
+            cooldown_until: None,
+            last_error: None,
         });
         Mutex::new(seed)
     })
@@ -215,18 +220,40 @@ pub struct ClaudeLiveLimits {
     pub extra_usage: Option<ExtraUsageInfo>,
 }
 
-fn http_fetch_live_limits() -> Result<ClaudeLiveLimits> {
-    let token = read_oauth_token()?;
-    let resp = ureq::get("https://api.anthropic.com/api/oauth/usage")
+/// Result of a single HTTP fetch attempt. Distinguishes rate-limit from
+/// other errors so the caller can apply a longer backoff specifically for 429.
+enum FetchOutcome {
+    Ok(ClaudeLiveLimits),
+    RateLimited(String),
+    Other(anyhow::Error),
+}
+
+fn http_fetch_live_limits() -> FetchOutcome {
+    let token = match read_oauth_token() {
+        Ok(t) => t,
+        Err(e) => return FetchOutcome::Other(e),
+    };
+    let result = ureq::get("https://api.anthropic.com/api/oauth/usage")
         .set("Authorization", &format!("Bearer {token}"))
         .set("anthropic-version", "2023-06-01")
         .set("anthropic-beta", "oauth-2025-04-20")
         .timeout(std::time::Duration::from_secs(8))
-        .call()
-        .map_err(|e| anyhow!("call /api/oauth/usage: {e}"))?;
-    let body: UsageResponse = resp
-        .into_json()
-        .map_err(|e| anyhow!("decode usage response: {e}"))?;
+        .call();
+    let resp = match result {
+        Ok(r) => r,
+        Err(ureq::Error::Status(429, _)) => {
+            return FetchOutcome::RateLimited(
+                "Anthropic /api/oauth/usage returned 429 — backing off".to_string(),
+            );
+        }
+        Err(e) => {
+            return FetchOutcome::Other(anyhow!("call /api/oauth/usage: {e}"));
+        }
+    };
+    let body: UsageResponse = match resp.into_json() {
+        Ok(b) => b,
+        Err(e) => return FetchOutcome::Other(anyhow!("decode usage response: {e}")),
+    };
 
     // Sub-quotas: include any that are present in the response (non-null).
     // Anthropic returns these whether you've used the feature or not — we
@@ -254,7 +281,7 @@ fn http_fetch_live_limits() -> Result<ClaudeLiveLimits> {
         currency: e.currency.unwrap_or_else(|| "USD".to_string()),
     });
 
-    Ok(ClaudeLiveLimits {
+    FetchOutcome::Ok(ClaudeLiveLimits {
         five_hour_percent: body.five_hour.as_ref().map(|w| w.utilization).unwrap_or(0.0),
         five_hour_resets_at: body.five_hour.as_ref().and_then(|w| w.resets_at),
         weekly_percent: body.seven_day.as_ref().map(|w| w.utilization).unwrap_or(0.0),
@@ -264,56 +291,66 @@ fn http_fetch_live_limits() -> Result<ClaudeLiveLimits> {
     })
 }
 
-/// Returns the live limits, using a 60-second in-process cache to avoid
-/// hammering /api/oauth/usage (which 429s under load). On fetch failure,
-/// falls back to the cached value if any.
+/// Returns the live limits with caching tied to the user's UI refresh
+/// interval. The backend cache TTL is `max(refresh_ms, MIN_CACHE_TTL)` so
+/// each UI poll receives data at most that old, while still protecting the
+/// API from extreme settings.
 ///
-/// **Past-reset bypass:** if the cached `resets_at` is already in the past
-/// (5h or weekly window expired but the server hasn't published a new value
-/// yet — happens during the gap between window-end and the next message),
-/// the 60s TTL is bypassed and a fresh fetch is attempted every 10s. This
-/// closes the "stuck clock" window where the widget would otherwise hold a
-/// stale reset timestamp for up to a minute past window-end.
-pub fn fetch_live_limits() -> Result<ClaudeLiveLimits> {
-    let now = Utc::now();
+/// **Caching policy:**
+/// - Normal: serve cached value for `refresh_ms` (floor 30s), then fetch.
+/// - 429 received: refuse to retry for 15 minutes (`RATE_LIMIT_BACKOFF`),
+///   regardless of user setting — the server is telling us to back off.
+pub fn fetch_live_limits(refresh_ms: u64) -> Result<ClaudeLiveLimits> {
+    let ttl =
+        std::time::Duration::from_millis(refresh_ms).max(MIN_CACHE_TTL);
+    let now_inst = Instant::now();
     {
         let guard = cache().lock().unwrap();
         if let Some(entry) = guard.as_ref() {
-            let age = entry.fetched_at.elapsed();
-            let has_past_reset =
-                entry.value.five_hour_resets_at.map_or(false, |t| t <= now)
-                || entry.value.weekly_resets_at.map_or(false, |t| t <= now);
-            // Serve cache if: within 60s AND no past-reset values, OR within
-            // 10s regardless (rate-limit guard against retry storms).
-            let cache_is_fresh = if has_past_reset {
-                age < PAST_RESET_RETRY_MIN_AGE
-            } else {
-                age < USAGE_CACHE_MIN_AGE
-            };
-            if cache_is_fresh {
+            // Honor active 429 cooldown: serve cached value, do NOT hit the API.
+            if let Some(until) = entry.cooldown_until {
+                if now_inst < until {
+                    return Ok(entry.value.clone());
+                }
+            }
+            if entry.fetched_at.elapsed() < ttl {
                 return Ok(entry.value.clone());
             }
         }
     }
     match http_fetch_live_limits() {
-        Ok(fresh) => {
+        FetchOutcome::Ok(fresh) => {
             let mut guard = cache().lock().unwrap();
             *guard = Some(CacheEntry {
                 fetched_at: Instant::now(),
                 value: fresh.clone(),
+                cooldown_until: None,
+                last_error: None,
             });
             drop(guard);
             write_disk_cache(&fresh);
             Ok(fresh)
         }
-        Err(e) => {
-            // Fall back to last-known cached value if we have one. Also
-            // bump fetched_at on the cache so we don't immediately retry
-            // again on the next snapshot call (rate-limit guard).
+        FetchOutcome::RateLimited(msg) => {
+            eprintln!("[tally] {msg} — cooldown {}s", RATE_LIMIT_BACKOFF.as_secs());
+            let mut guard = cache().lock().unwrap();
+            if let Some(entry) = guard.as_mut() {
+                entry.fetched_at = Instant::now();
+                entry.cooldown_until = Some(Instant::now() + RATE_LIMIT_BACKOFF);
+                entry.last_error = Some(msg);
+                Ok(entry.value.clone())
+            } else {
+                // No prior cache + rate-limited. Return empty default so the
+                // UI shows a "ready" state rather than spinning.
+                Ok(ClaudeLiveLimits::default())
+            }
+        }
+        FetchOutcome::Other(e) => {
             let mut guard = cache().lock().unwrap();
             if let Some(entry) = guard.as_mut() {
                 eprintln!("[tally] claude live fetch failed ({e}); using cached value");
                 entry.fetched_at = Instant::now();
+                entry.last_error = Some(e.to_string());
                 Ok(entry.value.clone())
             } else {
                 Err(e)
@@ -438,11 +475,11 @@ struct ClaudeUsage {
     cache_read_input_tokens: u64,
 }
 
-pub fn collect() -> Result<ClaudeStats> {
+pub fn collect(refresh_ms: u64) -> Result<ClaudeStats> {
     let mut stats = ClaudeStats::default();
 
     // 1. Live rate-limit utilization from /api/oauth/usage
-    match fetch_live_limits() {
+    match fetch_live_limits(refresh_ms) {
         Ok(live) => {
             stats.five_hour_percent = live.five_hour_percent;
             stats.weekly_percent = live.weekly_percent;

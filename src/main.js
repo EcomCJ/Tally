@@ -257,7 +257,7 @@ function render(snap) {
 async function refresh() {
   const liveEl = el("pillLive");
   try {
-    const snap = await invoke("get_snapshot");
+    const snap = await invoke("get_snapshot", { refreshMs: settings.refreshMs });
     render(snap);
     if (liveEl) liveEl.textContent = "live";
     // Refit window to content (handles freshness tag wrapping etc.)

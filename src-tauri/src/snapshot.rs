@@ -88,11 +88,11 @@ pub struct RoiBlock {
     pub mtd_days_elapsed: u32,
 }
 
-pub fn build() -> Result<UsageSnapshot> {
+pub fn build(refresh_ms: u64) -> Result<UsageSnapshot> {
     let claude_available = claude::is_available();
     let codex_available = codex::is_available();
 
-    let claude_stats = if claude_available { claude::collect()? } else { claude::ClaudeStats::default() };
+    let claude_stats = if claude_available { claude::collect(refresh_ms)? } else { claude::ClaudeStats::default() };
     let codex_stats  = if codex_available  { codex::collect()?  } else { codex::CodexStats::default() };
 
     // Auto-detect plans from API. Fall back to sensible defaults if calls fail.
