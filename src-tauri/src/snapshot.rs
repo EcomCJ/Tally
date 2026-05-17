@@ -189,22 +189,16 @@ pub fn build() -> Result<UsageSnapshot> {
         name: "Claude Code".to_string(),
         tier: claude_plan.label.clone(),
         color: "#D97757".to_string(),
-        five_hour: WindowState {
-            used_percent: claude_stats.five_hour_percent,
-            resets_at: claude_stats.next_5h_reset,
-            resets_label: claude_stats
-                .next_5h_reset
-                .map(short_time)
-                .unwrap_or_else(|| "—".to_string()),
-        },
-        weekly: WindowState {
-            used_percent: claude_stats.weekly_percent,
-            resets_at: claude_stats.next_weekly_reset,
-            resets_label: claude_stats
-                .next_weekly_reset
-                .map(short_date_time)
-                .unwrap_or_else(|| "Sun 00:00".to_string()),
-        },
+        five_hour: build_window(
+            claude_stats.five_hour_percent,
+            claude_stats.next_5h_reset,
+            short_time,
+        ),
+        weekly: build_window(
+            claude_stats.weekly_percent,
+            claude_stats.next_weekly_reset,
+            short_date_time,
+        ),
         periods: claude_periods,
         last_event_at: claude_stats.last_event_at,
         sub_quotas: {
@@ -251,24 +245,16 @@ pub fn build() -> Result<UsageSnapshot> {
         name: "Codex".to_string(),
         tier: codex_plan.label.clone(),
         color: "#10A37F".to_string(),
-        five_hour: WindowState {
-            used_percent: codex_stats.rate_limits.primary_used_percent,
-            resets_at: codex_stats.rate_limits.primary_resets_at,
-            resets_label: codex_stats
-                .rate_limits
-                .primary_resets_at
-                .map(short_time)
-                .unwrap_or_else(|| "—".to_string()),
-        },
-        weekly: WindowState {
-            used_percent: codex_stats.rate_limits.secondary_used_percent,
-            resets_at: codex_stats.rate_limits.secondary_resets_at,
-            resets_label: codex_stats
-                .rate_limits
-                .secondary_resets_at
-                .map(short_date_time)
-                .unwrap_or_else(|| "Sun 00:00".to_string()),
-        },
+        five_hour: build_window(
+            codex_stats.rate_limits.primary_used_percent,
+            codex_stats.rate_limits.primary_resets_at,
+            short_time,
+        ),
+        weekly: build_window(
+            codex_stats.rate_limits.secondary_used_percent,
+            codex_stats.rate_limits.secondary_resets_at,
+            short_date_time,
+        ),
         periods: codex_periods,
         last_event_at: codex_stats.last_event_at,
         sub_quotas: Vec::new(),
@@ -340,4 +326,32 @@ fn short_time(dt: DateTime<Utc>) -> String {
 fn short_date_time(dt: DateTime<Utc>) -> String {
     let local: DateTime<chrono::Local> = dt.into();
     local.format("%a %-I:%M %p").to_string()
+}
+
+/// Build a WindowState, normalizing past resets_at values.
+///
+/// Claude/Codex rate-limit APIs return a `resets_at` that points at the END
+/// of the *current* active window. Once that timestamp passes with no new
+/// activity, the server keeps returning the same (now-stale) timestamp until
+/// the user sends a new message that starts a fresh window. Surfacing a past
+/// time to the user looks like a stuck clock. Treat past timestamps as "no
+/// active window — ready to start" with 0% used.
+fn build_window(
+    raw_percent: f64,
+    resets_at: Option<DateTime<Utc>>,
+    fmt: fn(DateTime<Utc>) -> String,
+) -> WindowState {
+    let now = Utc::now();
+    match resets_at {
+        Some(t) if t > now => WindowState {
+            used_percent: raw_percent,
+            resets_at: Some(t),
+            resets_label: fmt(t),
+        },
+        _ => WindowState {
+            used_percent: 0.0,
+            resets_at: None,
+            resets_label: "Ready".to_string(),
+        },
+    }
 }
