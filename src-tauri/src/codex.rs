@@ -9,6 +9,22 @@ use std::process::{Command, Stdio};
 use std::time::Duration as StdDuration;
 use walkdir::WalkDir;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+/// CREATE_NO_WINDOW (0x08000000) — suppresses the console flash when a GUI
+/// app spawns a console subprocess on Windows. Without this, every refresh
+/// pops a black cmd.exe window for ~50ms.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// Helper: build a Command with the no-window flag set on Windows.
+fn quiet_command(program: &impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
 // =====================================================================
 // LIVE rate limits via `codex app-server` JSON-RPC.
 // Matches what the Codex Desktop popup shows. Same auth pool.
@@ -124,7 +140,7 @@ fn locate_codex() -> PathBuf {
     // 2. PATH lookup via where (Windows) / which (Unix)
     let lookup_cmd = if cfg!(windows) { "where" } else { "which" };
     for name in &["codex.cmd", "codex.exe", "codex"] {
-        if let Ok(out) = Command::new(lookup_cmd).arg(name).output() {
+        if let Ok(out) = quiet_command(&lookup_cmd).arg(name).output() {
             if out.status.success() {
                 if let Some(first) = String::from_utf8_lossy(&out.stdout).lines().next() {
                     let p = PathBuf::from(first.trim());
@@ -148,7 +164,7 @@ fn locate_codex() -> PathBuf {
 /// Returns: (rate_limits, plan_label_human, plan_type_raw, fetched_at)
 pub fn fetch_live_rate_limits() -> Result<(CodexRateLimits, String, String, DateTime<Utc>)> {
     let codex_path = locate_codex();
-    let mut child = Command::new(&codex_path)
+    let mut child = quiet_command(&codex_path)
         .arg("app-server")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -175,7 +191,7 @@ pub fn fetch_live_rate_limits() -> Result<(CodexRateLimits, String, String, Date
         }
     });
 
-    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"tally","version":"0.1.0"}}}"#;
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"tally","version":"0.1.1"}}}"#;
     let initd = r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#;
     let read = r#"{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}"#;
     writeln!(stdin, "{init}")?;
@@ -222,7 +238,7 @@ pub fn fetch_live_rate_limits() -> Result<(CodexRateLimits, String, String, Date
     let pid = child.id();
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("taskkill")
+        let _ = quiet_command(&"taskkill")
             .args(["/PID", &pid.to_string(), "/F", "/T"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())

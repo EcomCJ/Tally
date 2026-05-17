@@ -243,25 +243,23 @@ async function refresh() {
   }
 }
 
-// Measure the active visible container and resize the window to fit exactly.
+// Auto-fit HEIGHT to content. Width stays at the canonical state width so
+// a mid-transition measurement can't lock the window narrow.
+const WIDTH_BY_STATE = { collapsed: 272, expanded: 640, settings: 640 };
 async function fitWindowToContent() {
-  // Pick the visible top-level element based on body state
-  let target;
+  let target, stateKey;
   if (document.body.classList.contains("state-expanded")) {
-    target = el("panel");
+    target = el("panel");    stateKey = "expanded";
   } else if (document.body.classList.contains("state-settings")) {
-    target = el("settings");
+    target = el("settings"); stateKey = "settings";
   } else {
-    target = el("pill");
+    target = el("pill");     stateKey = "collapsed";
   }
   if (!target) return;
-  // Force layout before measuring
-  void target.offsetHeight;
-  const rect = target.getBoundingClientRect();
-  const w = Math.ceil(rect.width);
-  const h = Math.ceil(rect.height);
-  if (w < 100 || h < 50) return; // sanity
-  try { await invoke("set_window_size", { width: w, height: h }); } catch (e) {}
+  void target.offsetHeight; // force layout
+  const h = Math.ceil(target.getBoundingClientRect().height);
+  if (h < 50) return;
+  try { await invoke("set_window_size", { width: WIDTH_BY_STATE[stateKey], height: h }); } catch (e) {}
 }
 
 // ── State toggle
