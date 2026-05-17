@@ -11,6 +11,11 @@ use walkdir::WalkDir;
 // endpoint (it 429s if called too often). Persisted to disk so restarts
 // don't reset to 0%. Survives transient failures and rate limits.
 const USAGE_CACHE_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+// When the cached resets_at is already in the past (window has expired and
+// we're waiting on the server to publish a fresh value), bypass the 60s TTL
+// and try fresh on every snapshot call — but throttle to no faster than this
+// interval so we don't trigger 429s during the dead-zone.
+const PAST_RESET_RETRY_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct DiskCache {
@@ -259,14 +264,33 @@ fn http_fetch_live_limits() -> Result<ClaudeLiveLimits> {
     })
 }
 
-/// Returns the live limits, using a 25-second in-process cache to avoid
+/// Returns the live limits, using a 60-second in-process cache to avoid
 /// hammering /api/oauth/usage (which 429s under load). On fetch failure,
 /// falls back to the cached value if any.
+///
+/// **Past-reset bypass:** if the cached `resets_at` is already in the past
+/// (5h or weekly window expired but the server hasn't published a new value
+/// yet — happens during the gap between window-end and the next message),
+/// the 60s TTL is bypassed and a fresh fetch is attempted every 10s. This
+/// closes the "stuck clock" window where the widget would otherwise hold a
+/// stale reset timestamp for up to a minute past window-end.
 pub fn fetch_live_limits() -> Result<ClaudeLiveLimits> {
+    let now = Utc::now();
     {
         let guard = cache().lock().unwrap();
         if let Some(entry) = guard.as_ref() {
-            if entry.fetched_at.elapsed() < USAGE_CACHE_MIN_AGE {
+            let age = entry.fetched_at.elapsed();
+            let has_past_reset =
+                entry.value.five_hour_resets_at.map_or(false, |t| t <= now)
+                || entry.value.weekly_resets_at.map_or(false, |t| t <= now);
+            // Serve cache if: within 60s AND no past-reset values, OR within
+            // 10s regardless (rate-limit guard against retry storms).
+            let cache_is_fresh = if has_past_reset {
+                age < PAST_RESET_RETRY_MIN_AGE
+            } else {
+                age < USAGE_CACHE_MIN_AGE
+            };
+            if cache_is_fresh {
                 return Ok(entry.value.clone());
             }
         }
@@ -283,10 +307,13 @@ pub fn fetch_live_limits() -> Result<ClaudeLiveLimits> {
             Ok(fresh)
         }
         Err(e) => {
-            // Fall back to last-known cached value if we have one.
-            let guard = cache().lock().unwrap();
-            if let Some(entry) = guard.as_ref() {
+            // Fall back to last-known cached value if we have one. Also
+            // bump fetched_at on the cache so we don't immediately retry
+            // again on the next snapshot call (rate-limit guard).
+            let mut guard = cache().lock().unwrap();
+            if let Some(entry) = guard.as_mut() {
                 eprintln!("[tally] claude live fetch failed ({e}); using cached value");
+                entry.fetched_at = Instant::now();
                 Ok(entry.value.clone())
             } else {
                 Err(e)
