@@ -13,6 +13,7 @@ use walkdir::WalkDir;
 // client — still under the bucket with margin for `claude.exe` etc sharing
 // the same OAuth token.
 const MIN_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+const DISK_CACHE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 // On 429, refuse to retry for this long. The endpoint's window is opaque so
 // we just back off hard regardless of user refresh setting.
 const RATE_LIMIT_BACKOFF: std::time::Duration = std::time::Duration::from_secs(900);
@@ -115,6 +116,10 @@ fn read_disk_cache() -> Option<DiskCache> {
             Err(_) => continue,
         };
         if let Ok(cache) = serde_json::from_str::<DiskCache>(&s) {
+            let age_secs = Utc::now().timestamp().saturating_sub(cache.fetched_at_unix);
+            if age_secs as u64 > DISK_CACHE_MAX_AGE.as_secs() {
+                continue;
+            }
             return Some(cache);
         }
     }
@@ -146,8 +151,18 @@ fn write_disk_cache(value: &ClaudeLiveLimits) {
 struct UsageResponse {
     five_hour: Option<UsageWindow>,
     seven_day: Option<UsageWindow>,
+    seven_day_oauth_apps: Option<UsageWindow>,
     seven_day_opus: Option<UsageWindow>,
     seven_day_sonnet: Option<UsageWindow>,
+    seven_day_design: Option<UsageWindow>,
+    seven_day_claude_design: Option<UsageWindow>,
+    claude_design: Option<UsageWindow>,
+    design: Option<UsageWindow>,
+    seven_day_routines: Option<UsageWindow>,
+    seven_day_claude_routines: Option<UsageWindow>,
+    claude_routines: Option<UsageWindow>,
+    routines: Option<UsageWindow>,
+    routine: Option<UsageWindow>,
     seven_day_cowork: Option<UsageWindow>,
     seven_day_omelette: Option<UsageWindow>,
     extra_usage: Option<ExtraUsage>,
@@ -284,10 +299,12 @@ fn http_fetch_live_limits() -> FetchOutcome {
         Ok(t) => t,
         Err(e) => return FetchOutcome::Other(e),
     };
+    let user_agent = format!("claude-code/{}", claude_code_version());
     let result = ureq::get("https://api.anthropic.com/api/oauth/usage")
         .set("Authorization", &format!("Bearer {token}"))
-        .set("anthropic-version", "2023-06-01")
+        .set("Accept", "application/json")
         .set("anthropic-beta", "oauth-2025-04-20")
+        .set("User-Agent", &user_agent)
         .timeout(std::time::Duration::from_secs(8))
         .call();
     let resp = match result {
@@ -319,10 +336,28 @@ fn http_fetch_live_limits() -> FetchOutcome {
             });
         }
     };
-    push_q(&mut sub_quotas, "Sonnet",       &body.seven_day_sonnet);
-    push_q(&mut sub_quotas, "Opus",         &body.seven_day_opus);
-    push_q(&mut sub_quotas, "Cowork",       &body.seven_day_cowork);
-    push_q(&mut sub_quotas, "Claude Design",&body.seven_day_omelette);
+    push_q(&mut sub_quotas, "Sonnet", &body.seven_day_sonnet);
+    push_q(&mut sub_quotas, "Opus", &body.seven_day_opus);
+
+    let design = body
+        .seven_day_design
+        .as_ref()
+        .or(body.seven_day_claude_design.as_ref())
+        .or(body.claude_design.as_ref())
+        .or(body.design.as_ref())
+        .or(body.seven_day_omelette.as_ref())
+        .cloned();
+    let routines = body
+        .seven_day_routines
+        .as_ref()
+        .or(body.seven_day_claude_routines.as_ref())
+        .or(body.claude_routines.as_ref())
+        .or(body.routines.as_ref())
+        .or(body.routine.as_ref())
+        .or(body.seven_day_cowork.as_ref())
+        .cloned();
+    push_q(&mut sub_quotas, "Claude Design", &design);
+    push_q(&mut sub_quotas, "Claude Routines", &routines);
 
     let extra_usage = body.extra_usage.map(|e| ExtraUsageInfo {
         enabled: e.is_enabled.unwrap_or(false),
@@ -332,14 +367,32 @@ fn http_fetch_live_limits() -> FetchOutcome {
         currency: e.currency.unwrap_or_else(|| "USD".to_string()),
     });
 
+    let session_window = body.five_hour.as_ref().or(body.seven_day.as_ref());
+    let weekly_window = body.seven_day.as_ref().or(body.seven_day_oauth_apps.as_ref());
+
     FetchOutcome::Ok(ClaudeLiveLimits {
-        five_hour_percent: body.five_hour.as_ref().map(|w| w.utilization).unwrap_or(0.0),
-        five_hour_resets_at: body.five_hour.as_ref().and_then(|w| w.resets_at),
-        weekly_percent: body.seven_day.as_ref().map(|w| w.utilization).unwrap_or(0.0),
-        weekly_resets_at: body.seven_day.as_ref().and_then(|w| w.resets_at),
+        five_hour_percent: session_window.map(|w| w.utilization).unwrap_or(0.0),
+        five_hour_resets_at: session_window.and_then(|w| w.resets_at),
+        weekly_percent: weekly_window.map(|w| w.utilization).unwrap_or(0.0),
+        weekly_resets_at: weekly_window.and_then(|w| w.resets_at),
         sub_quotas,
         extra_usage,
     })
+}
+
+fn claude_code_version() -> String {
+    let output = std::process::Command::new("claude")
+        .arg("--version")
+        .output();
+    if let Ok(output) = output {
+        let raw = String::from_utf8_lossy(&output.stdout);
+        if let Some(first) = raw.split_whitespace().next() {
+            if !first.trim().is_empty() {
+                return first.trim().to_string();
+            }
+        }
+    }
+    "2.1.0".to_string()
 }
 
 /// Returns the live limits with caching tied to the user's UI refresh
@@ -391,9 +444,7 @@ pub fn fetch_live_limits(refresh_ms: u64) -> Result<ClaudeLiveLimits> {
                 entry.last_error = Some(msg);
                 Ok(entry.value.clone())
             } else {
-                // No prior cache + rate-limited. Return empty default so the
-                // UI shows a "ready" state rather than spinning.
-                Ok(ClaudeLiveLimits::default())
+                Err(anyhow!(msg))
             }
         }
         FetchOutcome::Other(e) => {
@@ -693,37 +744,11 @@ pub fn collect(refresh_ms: u64) -> Result<ClaudeStats> {
         }
     }
 
-    // ----- 3. Local 5h window derivation -----
-    // Fallback / cross-check for `next_5h_reset` — independent of API.
-    // Anthropic's 5h window starts on the first message after the previous
-    // window ended. Walk message timestamps in order, grouping into 5h
-    // clusters: each cluster's start = first message; window ends at
-    // start+5h. The most recent cluster's end is the next reset.
-    //
-    // The API's value wins when it's a valid future timestamp. When the API
-    // returns a past timestamp (stuck post-rollover) or fails entirely
-    // (429, network), the local value takes over so the reset clock stays
-    // accurate without depending on the rate-limited endpoint.
-    let api_provided_future_reset =
-        stats.next_5h_reset.map_or(false, |t| t > now);
+    // Limits/reset times come from the same provider payload as the usage
+    // percentage (OAuth/Web/CLI in the CodexBar model). Local JSONL is kept
+    // for cost/ROI only; do not infer a reset clock from message timestamps.
     if !all_message_times.is_empty() {
         all_message_times.sort();
-        let five_hours = Duration::hours(5);
-        let mut current_window_start = all_message_times[0];
-        for &t in &all_message_times[1..] {
-            if t >= current_window_start + five_hours {
-                current_window_start = t;
-            }
-        }
-        let local_window_end = current_window_start + five_hours;
-        let local_reset = if local_window_end > now {
-            Some(local_window_end)
-        } else {
-            None // window expired; awaiting next message
-        };
-        if !api_provided_future_reset {
-            stats.next_5h_reset = local_reset;
-        }
         stats.last_event_at = Some(*all_message_times.last().unwrap());
     }
 
