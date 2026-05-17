@@ -191,7 +191,7 @@ pub fn fetch_live_rate_limits() -> Result<(CodexRateLimits, String, String, Date
         }
     });
 
-    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"tally","version":"0.1.1"}}}"#;
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"tally","version":"0.1.4"}}}"#;
     let initd = r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#;
     let read = r#"{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}"#;
     writeln!(stdin, "{init}")?;

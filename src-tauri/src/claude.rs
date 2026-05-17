@@ -120,7 +120,7 @@ struct ProfileOrg {
 /// Fetch the user's Claude subscription tier identifier from /api/oauth/profile.
 /// Cached aggressively (24h) since it changes rarely.
 pub fn fetch_plan_tier() -> Result<String> {
-    // Disk cache: ~/usage-widget/claude-plan.txt with 24h TTL
+    // Disk cache: ~/tally/claude-plan.json with 24h TTL
     let cache_path = disk_cache_path().map(|mut p| { p.set_file_name("claude-plan.json"); p });
     if let Some(p) = &cache_path {
         if let Ok(s) = std::fs::read_to_string(p) {
