@@ -26,10 +26,49 @@ fn quiet_command(program: &impl AsRef<std::ffi::OsStr>) -> Command {
 }
 
 // =====================================================================
-// LIVE rate limits via `codex app-server` JSON-RPC.
-// Matches what the Codex Desktop popup shows. Same auth pool.
-// Method: account/rateLimits/read
+// LIVE rate limits via ChatGPT/Codex OAuth first, then `codex app-server`.
+// This mirrors CodexBar's app strategy: direct chatgpt.com usage API when
+// auth.json has OAuth credentials, CLI RPC as fallback.
 // =====================================================================
+
+#[derive(Debug, Deserialize)]
+struct CodexAuthFile {
+    tokens: Option<CodexAuthTokens>,
+    last_refresh: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CodexAuthTokens {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    id_token: Option<String>,
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexRefreshResponse {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    id_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthUsageResponse {
+    rate_limit: Option<OAuthRateLimit>,
+    plan_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthRateLimit {
+    primary_window: Option<OAuthRateLimitWindow>,
+    secondary_window: Option<OAuthRateLimitWindow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthRateLimitWindow {
+    used_percent: i64,
+    reset_at: Option<i64>,
+}
 
 #[derive(Debug, Deserialize)]
 struct RpcResponse {
@@ -98,20 +137,121 @@ pub struct CodexRateLimits {
     pub secondary_resets_at: Option<DateTime<Utc>>,
 }
 
-/// True if Codex CLI is installed AND authenticated (auth.json exists).
+/// True if Codex is authenticated. OAuth can work even when the CLI binary
+/// fallback is unavailable.
 pub fn is_available() -> bool {
-    let codex_path = locate_codex();
-    if !codex_path.exists() {
-        return false;
+    if codex_auth_path().map(|p| p.exists()).unwrap_or(false) {
+        return true;
     }
-    if let Some(mut auth) = dirs::home_dir() {
-        auth.push(".codex");
-        auth.push("auth.json");
-        if !auth.exists() {
-            return false;
+    locate_codex().exists()
+}
+
+fn codex_home_dir() -> Option<PathBuf> {
+    if let Some(raw) = std::env::var_os("CODEX_HOME") {
+        let s = raw.to_string_lossy().trim().to_string();
+        if !s.is_empty() {
+            return Some(PathBuf::from(s));
         }
     }
-    true
+    let mut home = dirs::home_dir()?;
+    home.push(".codex");
+    Some(home)
+}
+
+fn codex_auth_path() -> Option<PathBuf> {
+    let mut p = codex_home_dir()?;
+    p.push("auth.json");
+    Some(p)
+}
+
+fn read_codex_auth_file() -> Result<(PathBuf, CodexAuthFile)> {
+    let path = codex_auth_path().ok_or_else(|| anyhow!("no codex home dir"))?;
+    let file = File::open(&path).map_err(|e| anyhow!("read {}: {e}", path.display()))?;
+    let auth: CodexAuthFile = serde_json::from_reader(file)
+        .map_err(|e| anyhow!("parse {}: {e}", path.display()))?;
+    Ok((path, auth))
+}
+
+fn read_codex_auth() -> Result<CodexAuthTokens> {
+    let (path, auth) = read_codex_auth_file()?;
+    let tokens = auth.tokens.ok_or_else(|| anyhow!("codex auth missing tokens"))?;
+    let stale = auth
+        .last_refresh
+        .map(|ts| Utc::now().signed_duration_since(ts) > Duration::days(8))
+        .unwrap_or(true);
+    if stale {
+        if let Some(refresh_token) = tokens.refresh_token.as_deref() {
+            if !refresh_token.trim().is_empty() {
+                return refresh_codex_auth(&path, &tokens);
+            }
+        }
+    }
+    Ok(tokens)
+}
+
+fn refresh_codex_auth(path: &std::path::Path, current: &CodexAuthTokens) -> Result<CodexAuthTokens> {
+    let refresh_token = current
+        .refresh_token
+        .as_deref()
+        .ok_or_else(|| anyhow!("codex auth missing refresh_token"))?;
+    let resp = ureq::post("https://auth.openai.com/oauth/token")
+        .set("Content-Type", "application/json")
+        .timeout(std::time::Duration::from_secs(30))
+        .send_json(serde_json::json!({
+            "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "scope": "openid profile email"
+        }))
+        .map_err(|e| anyhow!("refresh codex oauth token: {e}"))?;
+    let body: CodexRefreshResponse = resp
+        .into_json()
+        .map_err(|e| anyhow!("decode codex oauth refresh: {e}"))?;
+    let updated = CodexAuthTokens {
+        access_token: body.access_token.or_else(|| current.access_token.clone()),
+        refresh_token: body.refresh_token.or_else(|| current.refresh_token.clone()),
+        id_token: body.id_token.or_else(|| current.id_token.clone()),
+        account_id: current.account_id.clone(),
+    };
+    save_codex_auth_tokens(path, &updated)?;
+    Ok(updated)
+}
+
+fn save_codex_auth_tokens(path: &std::path::Path, tokens: &CodexAuthTokens) -> Result<()> {
+    let raw = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".to_string());
+    let mut json: serde_json::Value =
+        serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
+    if !json.is_object() {
+        json = serde_json::json!({});
+    }
+    let mut token_obj = serde_json::Map::new();
+    if let Some(value) = tokens.access_token.as_ref() {
+        token_obj.insert("access_token".to_string(), serde_json::Value::String(value.clone()));
+    }
+    if let Some(value) = tokens.refresh_token.as_ref() {
+        token_obj.insert("refresh_token".to_string(), serde_json::Value::String(value.clone()));
+    }
+    if let Some(value) = tokens.id_token.as_ref() {
+        token_obj.insert("id_token".to_string(), serde_json::Value::String(value.clone()));
+    }
+    if let Some(value) = tokens.account_id.as_ref() {
+        token_obj.insert("account_id".to_string(), serde_json::Value::String(value.clone()));
+    }
+    json["tokens"] = serde_json::Value::Object(token_obj);
+    json["last_refresh"] = serde_json::Value::String(Utc::now().to_rfc3339());
+    let body = serde_json::to_string_pretty(&json)?;
+    std::fs::write(path, body).map_err(|e| anyhow!("write {}: {e}", path.display()))
+}
+
+fn plan_label(plan_type: Option<&str>) -> String {
+    match plan_type {
+        Some("prolite") => "PRO 5x".to_string(),
+        Some("pro") => "PRO".to_string(),
+        Some("team") => "TEAM".to_string(),
+        Some("plus") => "PLUS".to_string(),
+        Some(other) => other.to_uppercase(),
+        None => "PRO 5x".to_string(),
+    }
 }
 
 /// Locate the codex executable. Windows doesn't auto-resolve .cmd/.exe shims
@@ -155,16 +295,64 @@ fn locate_codex() -> PathBuf {
     PathBuf::from(if cfg!(windows) { "codex.cmd" } else { "codex" })
 }
 
+fn fetch_oauth_rate_limits() -> Result<(CodexRateLimits, String, String, DateTime<Utc>)> {
+    let tokens = read_codex_auth()?;
+    let access_token = tokens
+        .access_token
+        .ok_or_else(|| anyhow!("codex auth missing access_token"))?;
+    let mut req = ureq::get("https://chatgpt.com/backend-api/wham/usage")
+        .set("Authorization", &format!("Bearer {access_token}"))
+        .set("Accept", "application/json")
+        .set("User-Agent", "Tally")
+        .timeout(std::time::Duration::from_secs(10));
+    if let Some(account_id) = tokens.account_id {
+        if !account_id.trim().is_empty() {
+            req = req.set("ChatGPT-Account-Id", account_id.trim());
+        }
+    }
+    let resp = req
+        .call()
+        .map_err(|e| anyhow!("call chatgpt wham usage: {e}"))?;
+    let body: OAuthUsageResponse = resp
+        .into_json()
+        .map_err(|e| anyhow!("decode chatgpt wham usage: {e}"))?;
+
+    let mut rl = CodexRateLimits::default();
+    if let Some(primary) = body.rate_limit.as_ref().and_then(|r| r.primary_window.as_ref()) {
+        rl.primary_used_percent = primary.used_percent as f64;
+        rl.primary_resets_at = primary
+            .reset_at
+            .and_then(|ts| Utc.timestamp_opt(ts, 0).single());
+    }
+    if let Some(secondary) = body.rate_limit.as_ref().and_then(|r| r.secondary_window.as_ref()) {
+        rl.secondary_used_percent = secondary.used_percent as f64;
+        rl.secondary_resets_at = secondary
+            .reset_at
+            .and_then(|ts| Utc.timestamp_opt(ts, 0).single());
+    }
+    let raw = body.plan_type.unwrap_or_default();
+    let label = plan_label(if raw.is_empty() { None } else { Some(raw.as_str()) });
+    Ok((rl, label, raw, Utc::now()))
+}
+
+/// Returns: (rate_limits, plan_label_human, plan_type_raw, fetched_at)
+pub fn fetch_live_rate_limits() -> Result<(CodexRateLimits, String, String, DateTime<Utc>)> {
+    match fetch_oauth_rate_limits() {
+        Ok(result) => return Ok(result),
+        Err(e) => eprintln!("[tally] codex oauth fetch failed; falling back to RPC: {e}"),
+    }
+    fetch_rpc_rate_limits()
+}
+
 /// Spawn `codex app-server`, send initialize + account/rateLimits/read,
 /// wait actively for the id=2 response via a reader thread + channel.
 /// Holds stdin open until we have the answer (mimics the working manual
 /// pipe sequence where a trailing sleep keeps stdin alive while codex
 /// reaches out to OpenAI's API for the live rate-limit state).
-///
-/// Returns: (rate_limits, plan_label_human, plan_type_raw, fetched_at)
-pub fn fetch_live_rate_limits() -> Result<(CodexRateLimits, String, String, DateTime<Utc>)> {
+fn fetch_rpc_rate_limits() -> Result<(CodexRateLimits, String, String, DateTime<Utc>)> {
     let codex_path = locate_codex();
     let mut child = quiet_command(&codex_path)
+        .args(["-s", "read-only", "-a", "untrusted"])
         .arg("app-server")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -191,7 +379,7 @@ pub fn fetch_live_rate_limits() -> Result<(CodexRateLimits, String, String, Date
         }
     });
 
-    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"tally","version":"0.1.9"}}}"#;
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"tally","version":"0.1.14"}}}"#;
     let initd = r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#;
     let read = r#"{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}"#;
     writeln!(stdin, "{init}")?;
@@ -370,12 +558,11 @@ pub fn collect() -> Result<CodexStats> {
     }
 
     // 2. Token totals (today / MTD) from JSONL session aggregation
-    let mut sessions_dir = dirs::home_dir().ok_or_else(|| anyhow!("no home dir"))?;
-    sessions_dir.push(".codex");
+    let mut sessions_dir = codex_home_dir().ok_or_else(|| anyhow!("no codex home dir"))?;
     sessions_dir.push("sessions");
-    if !sessions_dir.exists() {
-        return Ok(stats);
-    }
+    let mut archived_dir = sessions_dir.clone();
+    archived_dir.pop();
+    archived_dir.push("archived_sessions");
 
     let now = Utc::now();
     let cutoff_30d = now - Duration::days(30);
@@ -406,7 +593,18 @@ pub fn collect() -> Result<CodexStats> {
     let mut events: Vec<(DateTime<Utc>, PathBuf, CodexTokenUsageRaw)> = Vec::new();
     let mut session_model: HashMap<PathBuf, String> = HashMap::new();
 
-    for entry in WalkDir::new(&sessions_dir).into_iter().filter_map(|e| e.ok()) {
+    let mut roots = Vec::new();
+    if sessions_dir.exists() {
+        roots.push(sessions_dir);
+    }
+    if archived_dir.exists() {
+        roots.push(archived_dir);
+    }
+    if roots.is_empty() {
+        return Ok(stats);
+    }
+
+    for entry in roots.iter().flat_map(|r| WalkDir::new(r).into_iter()).filter_map(|e| e.ok()) {
         let path = entry.path().to_path_buf();
         if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
             continue;
@@ -474,7 +672,7 @@ pub fn collect() -> Result<CodexStats> {
             delta.output_tokens,
             delta.reasoning_output_tokens,
         );
-        let mut accrue = |p: &mut CodexPeriodStats| {
+        let accrue = |p: &mut CodexPeriodStats| {
             p.tokens.input += delta.input_tokens;
             p.tokens.cached_input += delta.cached_input_tokens;
             p.tokens.output += delta.output_tokens;
