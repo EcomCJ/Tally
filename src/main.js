@@ -9,7 +9,7 @@ const RING_CIRCUMFERENCE = 188; // 2*pi*30
 const SETTINGS_KEY = "usage-widget:settings:v1";
 
 const DEFAULT_SETTINGS = {
-  refreshMs: 30_000,
+  refreshMs: 120_000,
   glassAlpha: 0.55,
   theme: "dark", // "dark" | "light" | "auto"
   claudeTier: "MAX 5× · $100",

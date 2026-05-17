@@ -7,10 +7,12 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use walkdir::WalkDir;
 
-// Minimum cache TTL — hard floor so the API isn't hammered even if the user
-// sets the UI refresh to something extreme. Anthropic rate-limits this
-// endpoint aggressively (429s after enough hits/hour).
-const MIN_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+// Minimum cache TTL — hard floor so the API isn't hammered. Anthropic
+// rate-limits /api/oauth/usage aggressively (we've measured 429s at ~30
+// hits/hour). At 60s floor, worst-case is 60 hits/hour from this one
+// client — still under the bucket with margin for `claude.exe` etc sharing
+// the same OAuth token.
+const MIN_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 // On 429, refuse to retry for this long. The endpoint's window is opaque so
 // we just back off hard regardless of user refresh setting.
 const RATE_LIMIT_BACKOFF: std::time::Duration = std::time::Duration::from_secs(900);
