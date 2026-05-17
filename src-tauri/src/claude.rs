@@ -530,6 +530,10 @@ pub fn collect(refresh_ms: u64) -> Result<ClaudeStats> {
     }
 
     let now = Utc::now();
+    // Local-derivation: every message timestamp with billable usage. Used
+    // after the walk to compute the current 5h window without depending on
+    // /api/oauth/usage (which 429s, can return stale resets_at, etc).
+    let mut all_message_times: Vec<DateTime<Utc>> = Vec::new();
     // Rolling periods — exact-minute rollers from now
     let cutoff_30d = now - Duration::days(30);
     let cutoff_14d = now - Duration::days(14);
@@ -599,6 +603,10 @@ pub fn collect(refresh_ms: u64) -> Result<ClaudeStats> {
                 Some(u) => u,
                 None => continue,
             };
+            // Capture for local 5h-window derivation. Only messages with
+            // usage data — those represent billable API calls that count
+            // toward the 5-hour budget.
+            all_message_times.push(ts);
             // Per-message cost using the actual model that ran (not a blend).
             let msg_cost = crate::pricing::claude_message_cost(
                 &model,
@@ -633,6 +641,41 @@ pub fn collect(refresh_ms: u64) -> Result<ClaudeStats> {
             }
         }
     }
+
+    // ----- 3. Local 5h window derivation -----
+    // Fallback / cross-check for `next_5h_reset` — independent of API.
+    // Anthropic's 5h window starts on the first message after the previous
+    // window ended. Walk message timestamps in order, grouping into 5h
+    // clusters: each cluster's start = first message; window ends at
+    // start+5h. The most recent cluster's end is the next reset.
+    //
+    // The API's value wins when it's a valid future timestamp. When the API
+    // returns a past timestamp (stuck post-rollover) or fails entirely
+    // (429, network), the local value takes over so the reset clock stays
+    // accurate without depending on the rate-limited endpoint.
+    let api_provided_future_reset =
+        stats.next_5h_reset.map_or(false, |t| t > now);
+    if !all_message_times.is_empty() {
+        all_message_times.sort();
+        let five_hours = Duration::hours(5);
+        let mut current_window_start = all_message_times[0];
+        for &t in &all_message_times[1..] {
+            if t >= current_window_start + five_hours {
+                current_window_start = t;
+            }
+        }
+        let local_window_end = current_window_start + five_hours;
+        let local_reset = if local_window_end > now {
+            Some(local_window_end)
+        } else {
+            None // window expired; awaiting next message
+        };
+        if !api_provided_future_reset {
+            stats.next_5h_reset = local_reset;
+        }
+        stats.last_event_at = Some(*all_message_times.last().unwrap());
+    }
+
     Ok(stats)
 }
 
