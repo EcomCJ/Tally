@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::{Mutex, OnceLock};
@@ -488,49 +489,82 @@ pub struct ClaudeStats {
     pub sub_quotas: Vec<SubQuota>,
     pub extra_usage: Option<ExtraUsageInfo>,
     pub cost_by_entrypoint_7d: std::collections::HashMap<String, f64>,
-    /// $ + tokens specifically attributed to Cowork sessions (via cliSessionId
-    /// match against `~/AppData/Roaming/Claude/local-agent-mode-sessions/`).
+    /// $ specifically attributed to Cowork sessions (via cliSessionId match
+    /// against Claude local-agent-mode-sessions indexes).
     pub cowork_cost_7d: f64,
     pub cowork_cost_today: f64,
     pub cowork_cost_mtd: f64,
+}
+
+/// Claude stores local app data in different roots depending on install mode.
+/// The packaged Windows app keeps its Roaming profile under LocalCache, while
+/// CLI installs typically use `%APPDATA%\Claude`.
+fn claude_config_roots() -> Vec<std::path::PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(mut p) = dirs::config_dir() {
+        p.push("Claude");
+        if seen.insert(p.clone()) {
+            roots.push(p);
+        }
+    }
+
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let packages = std::path::PathBuf::from(local_app_data).join("Packages");
+        if let Ok(entries) = std::fs::read_dir(packages) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                if !name.contains("claude") {
+                    continue;
+                }
+                let p = entry.path().join("LocalCache").join("Roaming").join("Claude");
+                if seen.insert(p.clone()) {
+                    roots.push(p);
+                }
+            }
+        }
+    }
+
+    roots
+}
+
+fn cowork_session_roots() -> Vec<std::path::PathBuf> {
+    claude_config_roots()
+        .into_iter()
+        .map(|root| root.join("local-agent-mode-sessions"))
+        .filter(|root| root.exists())
+        .collect()
 }
 
 /// Discover Cowork session IDs by walking the local-agent-mode-sessions tree
 /// and extracting `cliSessionId` from each `local_*.json` index file.
 fn discover_cowork_session_ids() -> std::collections::HashSet<String> {
     let mut set = std::collections::HashSet::new();
-    let mut root = match dirs::config_dir() {
-        // config_dir() = %APPDATA%\Roaming on Windows
-        Some(p) => p,
-        None => return set,
-    };
-    root.push("Claude");
-    root.push("local-agent-mode-sessions");
-    if !root.exists() {
-        return set;
-    }
-    for entry in WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
-        let path = entry.path();
-        let name = match path.file_name().and_then(|s| s.to_str()) {
-            Some(n) => n,
-            None => continue,
-        };
-        if !(name.starts_with("local_") && name.ends_with(".json")) {
-            continue;
-        }
-        let body = match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        // Minimal field-only parse to avoid pulling in unrelated nested types.
-        #[derive(Deserialize)]
-        struct CoworkIdx {
-            #[serde(rename = "cliSessionId")]
-            cli_session_id: Option<String>,
-        }
-        if let Ok(idx) = serde_json::from_str::<CoworkIdx>(&body) {
-            if let Some(sid) = idx.cli_session_id {
-                set.insert(sid);
+    for root in cowork_session_roots() {
+        for entry in WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let name = match path.file_name().and_then(|s| s.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+            if !(name.starts_with("local_") && name.ends_with(".json")) {
+                continue;
+            }
+            let body = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            // Minimal field-only parse to avoid pulling in unrelated nested types.
+            #[derive(Deserialize)]
+            struct CoworkIdx {
+                #[serde(rename = "cliSessionId")]
+                cli_session_id: Option<String>,
+            }
+            if let Ok(idx) = serde_json::from_str::<CoworkIdx>(&body) {
+                if let Some(sid) = idx.cli_session_id {
+                    set.insert(sid);
+                }
             }
         }
     }
@@ -603,9 +637,6 @@ pub fn collect(refresh_ms: u64) -> Result<ClaudeStats> {
     };
     projects_dir.push(".claude");
     projects_dir.push("projects");
-    if !projects_dir.exists() {
-        return Ok(stats);
-    }
 
     // Cowork-tagged session IDs (linked via local-agent-mode-sessions index).
     let cowork_ids = discover_cowork_session_ids();
@@ -613,22 +644,24 @@ pub fn collect(refresh_ms: u64) -> Result<ClaudeStats> {
     // Build list of directories to walk for JSONL events.
     // 1. Regular Claude Code sessions: ~/.claude/projects/
     // 2. Cowork sessions: each has its OWN .claude/projects/ inside
-    //    ~/AppData/Roaming/Claude/local-agent-mode-sessions/{...}/local_*/.claude/projects/
-    let mut walk_roots: Vec<std::path::PathBuf> = vec![projects_dir.clone()];
-    if let Some(mut cw_root) = dirs::config_dir() {
-        cw_root.push("Claude");
-        cw_root.push("local-agent-mode-sessions");
-        if cw_root.exists() {
-            // Find every nested .claude/projects/ subtree
-            for entry in WalkDir::new(&cw_root).max_depth(6).into_iter().filter_map(|e| e.ok()) {
-                let p = entry.path();
-                if p.is_dir() && p.ends_with("projects")
-                    && p.parent().map(|pp| pp.ends_with(".claude")).unwrap_or(false)
-                {
-                    walk_roots.push(p.to_path_buf());
-                }
+    //    each Claude local-agent-mode-sessions root.
+    let mut walk_roots: Vec<std::path::PathBuf> = Vec::new();
+    if projects_dir.exists() {
+        walk_roots.push(projects_dir.clone());
+    }
+    for cw_root in cowork_session_roots() {
+        // Find every nested .claude/projects/ subtree.
+        for entry in WalkDir::new(&cw_root).max_depth(10).into_iter().filter_map(|e| e.ok()) {
+            let p = entry.path();
+            if p.is_dir() && p.ends_with("projects")
+                && p.parent().map(|pp| pp.ends_with(".claude")).unwrap_or(false)
+            {
+                walk_roots.push(p.to_path_buf());
             }
         }
+    }
+    if walk_roots.is_empty() {
+        return Ok(stats);
     }
 
     let now = Utc::now();
@@ -717,7 +750,7 @@ pub fn collect(refresh_ms: u64) -> Result<ClaudeStats> {
                 usage.cache_read_input_tokens,
                 usage.cache_creation_input_tokens,
             );
-            let mut accrue = |p: &mut PeriodStats| {
+            let accrue = |p: &mut PeriodStats| {
                 add(&mut p.tokens, &usage);
                 p.requests += 1;
                 p.cost += msg_cost;
