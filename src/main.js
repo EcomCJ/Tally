@@ -14,6 +14,22 @@ const DEFAULT_SETTINGS = {
   theme: "dark", // "dark" | "light" | "auto"
   claudeTier: "MAX 5× · $100",
   codexTier:  "PRO 5× · $100",
+  // ROI denominator behavior:
+  //   "monthly"  → always divide by full monthly sub cost (legacy)
+  //   "prorated" → divide by sub cost scaled to selected period
+  //                e.g. 7D leverage = 7d_spend / (7/30 × monthly_sub)
+  roiMode: "prorated",
+};
+
+// Days-in-period for proration. "today" is partial — we round up to 1 day.
+const PERIOD_DAYS = {
+  now:   30,  // Now stays MTD-anchored
+  today: 1,
+  "1d":  1,
+  "7d":  7,
+  "14d": 14,
+  "30d": 30,
+  // mtd uses live days-elapsed from snapshot.roi.mtd_days_elapsed
 };
 
 function loadSettings() {
@@ -218,15 +234,24 @@ function render(snap) {
   el("roiSubs").textContent      = fmtMoney(r.subscriptions, 0);
   el("roiSubsBreakdown").textContent = fmtMoney(r.claude_monthly, 0) + " Claude + " + fmtMoney(r.codex_monthly, 0) + " Codex";
 
-  // ROI leverage behavior:
-  //  - "Now"   → MTD-anchored leverage (original default landing view)
-  //  - others  → period-scaled leverage
+  // ROI leverage:
+  //  - "Now" view → MTD spend vs MTD-prorated sub (or full monthly if mode=monthly)
+  //  - other views → period spend vs period-prorated sub (or full monthly if mode=monthly)
   const leverageEquiv = isNow ? r.mtd_api_equiv : leftEquiv;
   const leverageLabel = isNow ? "MTD" : (PERIOD_LABELS[currentPeriod] || "TODAY");
-  const periodLeverage = r.subscriptions > 0 ? leverageEquiv / r.subscriptions : 0;
-  el("roiLeverage").textContent  = periodLeverage.toFixed(1) + "×";
-  const periodSaved = Math.max(0, leverageEquiv - r.subscriptions);
-  el("roiSaved").textContent     = fmtMoney(periodSaved, 0) + " saved " + leverageLabel;
+
+  let leverageDenom = r.subscriptions; // legacy "monthly" mode
+  if (settings.roiMode === "prorated") {
+    const days = currentPeriod === "mtd" || isNow
+      ? Math.max(1, r.mtd_days_elapsed || 1)
+      : (PERIOD_DAYS[currentPeriod] || 30);
+    leverageDenom = (days / 30) * r.subscriptions;
+  }
+
+  const periodLeverage = leverageDenom > 0 ? leverageEquiv / leverageDenom : 0;
+  el("roiLeverage").textContent = periodLeverage.toFixed(1) + "×";
+  const periodSaved = Math.max(0, leverageEquiv - leverageDenom);
+  el("roiSaved").textContent = fmtMoney(periodSaved, 0) + " saved " + leverageLabel;
 }
 
 async function refresh() {
@@ -300,8 +325,11 @@ function applySettings() {
   if (opacityEl) opacityEl.value = String(settings.glassAlpha);
   const opacityVal = el("optOpacityVal");
   if (opacityVal) opacityVal.textContent = Number(settings.glassAlpha).toFixed(2);
-  document.querySelectorAll(".theme-btn").forEach((b) => {
+  document.querySelectorAll(".theme-btn[data-theme]").forEach((b) => {
     b.setAttribute("data-active", b.dataset.theme === settings.theme ? "true" : "false");
+  });
+  document.querySelectorAll(".theme-btn[data-roi]").forEach((b) => {
+    b.setAttribute("data-active", b.dataset.roi === settings.roiMode ? "true" : "false");
   });
   const claudeTierInput = el("optClaudeTier");
   if (claudeTierInput) claudeTierInput.value = settings.claudeTier;
@@ -356,11 +384,20 @@ function wireSettings() {
     const v = el("optOpacityVal");
     if (v) v.textContent = settings.glassAlpha.toFixed(2);
   });
-  document.querySelectorAll(".theme-btn").forEach((btn) => {
+  document.querySelectorAll(".theme-btn[data-theme]").forEach((btn) => {
     btn.addEventListener("click", () => {
       settings.theme = btn.dataset.theme;
       saveSettings(settings);
       applySettings();
+      ackPulse(btn);
+    });
+  });
+  document.querySelectorAll(".theme-btn[data-roi]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      settings.roiMode = btn.dataset.roi;
+      saveSettings(settings);
+      applySettings();
+      if (lastSnapshot) render(lastSnapshot); // re-render ROI cells immediately
       ackPulse(btn);
     });
   });

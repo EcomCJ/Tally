@@ -246,6 +246,18 @@
         </div>
 
         <div class="setting-row">
+          <label>ROI denominator</label>
+          <div class="theme-toggle">
+            <button class="theme-btn" data-roi="prorated" data-active="true">Prorated</button>
+            <button class="theme-btn" data-roi="monthly">Full monthly</button>
+          </div>
+          <span class="setting-hint" style="display:block; margin-top:4px;">
+            Prorated: period spend ÷ period-scaled sub (e.g. 7D ÷ 7/30 × monthly).
+            Full monthly: always ÷ full monthly sub (today's $ feels tiny).
+          </span>
+        </div>
+
+        <div class="setting-row">
           <label>Plan labels</label>
           <div class="plan-edit">
             <input id="optClaudeTier" type="text" placeholder="MAX 5× · $100" />
