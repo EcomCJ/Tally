@@ -332,6 +332,11 @@ struct CodexPayload {
 struct CodexTokenInfo {
     #[serde(default)]
     total_token_usage: Option<CodexTokenUsageRaw>,
+    /// Per-turn delta — the tokens consumed in just this turn.
+    /// We use this for time-bucketing so a long-running session's
+    /// activity gets attributed to the right day/hour.
+    #[serde(default)]
+    last_token_usage: Option<CodexTokenUsageRaw>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -396,8 +401,9 @@ pub fn collect() -> Result<CodexStats> {
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or(now);
 
-    let mut final_per_session: HashMap<PathBuf, (DateTime<Utc>, CodexTokenUsageRaw)> = HashMap::new();
-    let mut session_request_count: HashMap<PathBuf, u64> = HashMap::new();
+    // Per-event ledger: each token_count event's last_token_usage attributed
+    // to THAT event's timestamp. Avoids the long-session attribution bug.
+    let mut events: Vec<(DateTime<Utc>, PathBuf, CodexTokenUsageRaw)> = Vec::new();
     let mut session_model: HashMap<PathBuf, String> = HashMap::new();
 
     for entry in WalkDir::new(&sessions_dir).into_iter().filter_map(|e| e.ok()) {
@@ -443,39 +449,38 @@ pub fn collect() -> Result<CodexStats> {
             if payload.payload_type.as_deref() != Some("token_count") {
                 continue;
             }
-            if ts >= today_start {
-                *session_request_count.entry(path.clone()).or_insert(0) += 1;
-            }
+            // Per-event attribution: use info.last_token_usage if present
+            // (the delta for just this turn). Skip events without it — the
+            // first event in a session always has info=null.
             if let Some(info) = payload.info {
-                if let Some(total) = info.total_token_usage {
-                    let take = final_per_session
-                        .get(&path)
-                        .map(|(prev_ts, _)| ts > *prev_ts)
-                        .unwrap_or(true);
-                    if take {
-                        final_per_session.insert(path.clone(), (ts, total));
+                if let Some(delta) = info.last_token_usage {
+                    if delta.input_tokens > 0 || delta.output_tokens > 0 || delta.reasoning_output_tokens > 0 {
+                        events.push((ts, path.clone(), delta));
                     }
                 }
             }
         }
     }
 
-    for (path, (ts, totals)) in &final_per_session {
-        let empty = String::new();
+    // Each event = one turn. Attribute its delta tokens + cost to the
+    // buckets matching the event's own timestamp.
+    let empty = String::new();
+    for (ts, path, delta) in &events {
         let model = session_model.get(path).unwrap_or(&empty);
-        let session_cost = crate::pricing::codex_turn_cost(
+        let cost = crate::pricing::codex_turn_cost(
             model,
-            totals.input_tokens,
-            totals.cached_input_tokens,
-            totals.output_tokens,
-            totals.reasoning_output_tokens,
+            delta.input_tokens,
+            delta.cached_input_tokens,
+            delta.output_tokens,
+            delta.reasoning_output_tokens,
         );
         let mut accrue = |p: &mut CodexPeriodStats| {
-            p.tokens.input += totals.input_tokens;
-            p.tokens.cached_input += totals.cached_input_tokens;
-            p.tokens.output += totals.output_tokens;
-            p.tokens.reasoning += totals.reasoning_output_tokens;
-            p.cost += session_cost;
+            p.tokens.input += delta.input_tokens;
+            p.tokens.cached_input += delta.cached_input_tokens;
+            p.tokens.output += delta.output_tokens;
+            p.tokens.reasoning += delta.reasoning_output_tokens;
+            p.cost += cost;
+            p.requests += 1;
         };
         if *ts >= today_start { accrue(&mut stats.today); }
         if *ts >= cutoff_1d   { accrue(&mut stats.d1); }
@@ -483,18 +488,6 @@ pub fn collect() -> Result<CodexStats> {
         if *ts >= cutoff_14d  { accrue(&mut stats.d14); }
         if *ts >= cutoff_30d  { accrue(&mut stats.d30); }
         if *ts >= mtd_start   { accrue(&mut stats.mtd); }
-    }
-    // Attribute request counts to the same periods using session's last ts
-    for (path, count) in &session_request_count {
-        let session_ts = final_per_session.get(path).map(|(t, _)| *t);
-        if let Some(ts) = session_ts {
-            if ts >= today_start { stats.today.requests += count; }
-            if ts >= cutoff_1d   { stats.d1.requests += count; }
-            if ts >= cutoff_7d   { stats.d7.requests += count; }
-            if ts >= cutoff_14d  { stats.d14.requests += count; }
-            if ts >= cutoff_30d  { stats.d30.requests += count; }
-            if ts >= mtd_start   { stats.mtd.requests += count; }
-        }
     }
 
     Ok(stats)
