@@ -16,6 +16,7 @@ const DEFAULT_SETTINGS = {
   codexTier:  "PRO 5× · $100",
   showTrayIcon: true,
   showTaskbarIcon: false,
+  autoCheckUpdates: true,
   // ROI denominator behavior:
   //   "monthly"  → always divide by full monthly sub cost (legacy)
   //   "prorated" → divide by sub cost scaled to selected period
@@ -62,6 +63,7 @@ let settings = loadSettings();
 let refreshTimer = null;
 let currentPeriod = "now";      // active data-view period
 let lastSnapshot = null;        // cached snapshot so picker re-renders without re-fetching
+let lastUpdateInfo = null;
 
 const PERIOD_LABELS = {
   now:   "TODAY",  // "Now" view shows today tokens but with MTD-anchored ROI
@@ -333,6 +335,46 @@ async function applyShellVisibility() {
   }
 }
 
+function renderUpdateStatus(message, tone = "muted") {
+  const status = el("updateStatus");
+  if (!status) return;
+  status.textContent = message;
+  status.dataset.tone = tone;
+}
+
+function renderUpdateControls(info) {
+  lastUpdateInfo = info;
+  const download = el("btnDownloadUpdate");
+  if (download) {
+    download.style.display = info?.update_available && info.download_url ? "" : "none";
+    download.textContent = info?.asset_name ? "Download " + info.asset_name : "Open release";
+  }
+  if (!info) return;
+  if (info.update_available) {
+    renderUpdateStatus(`Update available: ${info.latest_version}`, "ready");
+  } else if (info.latest_version) {
+    renderUpdateStatus(`Up to date: ${info.current_version}`, "ok");
+  }
+}
+
+async function checkForUpdates(manual = false) {
+  const btn = el("btnCheckUpdate");
+  if (btn) btn.disabled = true;
+  renderUpdateStatus("Checking GitHub Releases...", "muted");
+  try {
+    const info = await invoke("check_for_update");
+    renderUpdateControls(info);
+    if (manual && !info.update_available) {
+      flashSaved("✓ Current");
+    }
+  } catch (err) {
+    console.error("[usage-widget] update check error:", err);
+    renderUpdateStatus("Update check failed", "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 function applySettings() {
   settings = normalizeSettings(settings);
   // Theme
@@ -361,6 +403,9 @@ function applySettings() {
   });
   document.querySelectorAll(".theme-btn[data-taskbar]").forEach((b) => {
     b.setAttribute("data-active", String(settings.showTaskbarIcon) === b.dataset.taskbar ? "true" : "false");
+  });
+  document.querySelectorAll(".theme-btn[data-updates]").forEach((b) => {
+    b.setAttribute("data-active", String(settings.autoCheckUpdates) === b.dataset.updates ? "true" : "false");
   });
   const claudeTierInput = el("optClaudeTier");
   if (claudeTierInput) claudeTierInput.value = settings.claudeTier;
@@ -455,6 +500,26 @@ function wireSettings() {
       ackPulse(btn);
     });
   });
+  document.querySelectorAll(".theme-btn[data-updates]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      settings.autoCheckUpdates = btn.dataset.updates === "true";
+      saveSettings(settings);
+      applySettings();
+      ackPulse(btn);
+      if (settings.autoCheckUpdates) checkForUpdates(false);
+    });
+  });
+  el("btnCheckUpdate")?.addEventListener("click", () => checkForUpdates(true));
+  el("btnDownloadUpdate")?.addEventListener("click", async () => {
+    const url = lastUpdateInfo?.download_url || lastUpdateInfo?.release_url;
+    if (!url) return;
+    try {
+      await invoke("open_update_url", { url });
+    } catch (err) {
+      console.error("[usage-widget] open update URL error:", err);
+      renderUpdateStatus("Could not open update link", "error");
+    }
+  });
   el("optClaudeTier")?.addEventListener("input", (e) => {
     settings.claudeTier = e.target.value;
     saveSettings(settings);
@@ -524,4 +589,7 @@ window.addEventListener("DOMContentLoaded", () => {
   if (t2 && settings.codexTier) t2.textContent = settings.codexTier;
 
   refresh();
+  if (settings.autoCheckUpdates) {
+    setTimeout(() => checkForUpdates(false), 1500);
+  }
 });

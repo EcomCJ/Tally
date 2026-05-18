@@ -13,6 +13,7 @@ mod history;
 mod plans;
 mod pricing;
 mod snapshot;
+mod updater;
 
 const COLLAPSED: (f64, f64) = (272.0, 122.0);
 const EXPANDED: (f64, f64) = (640.0, 510.0);
@@ -67,6 +68,47 @@ fn hide_window(window: WebviewWindow) -> Result<(), String> {
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+#[tauri::command]
+fn check_for_update() -> Result<updater::UpdateInfo, String> {
+    updater::check(env!("CARGO_PKG_VERSION")).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_update_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://github.com/cjmedia72/tally/releases/") {
+        return Err("Update URL is outside the Tally GitHub releases page.".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -132,6 +174,8 @@ pub fn run() {
             set_window_size,
             hide_window,
             quit_app,
+            check_for_update,
+            open_update_url,
             set_shell_visibility,
         ])
         .setup(|app| {

@@ -262,6 +262,21 @@
         </div>
 
         <div class="setting-row">
+          <label>Updates</label>
+          <div class="presence-grid">
+            <div class="theme-toggle">
+              <button class="theme-btn" data-updates="true" data-active="true">Auto-check</button>
+              <button class="theme-btn" data-updates="false">Manual</button>
+            </div>
+            <button class="btn-secondary inline-action" id="btnCheckUpdate">Check now</button>
+          </div>
+          <div class="update-line">
+            <span class="setting-hint" id="updateStatus" data-tone="muted">GitHub Releases</span>
+            <button class="btn-secondary inline-action" id="btnDownloadUpdate" style="display:none;">Open release</button>
+          </div>
+        </div>
+
+        <div class="setting-row">
           <label>ROI denominator</label>
           <div class="theme-toggle">
             <button class="theme-btn" data-roi="prorated" data-active="true">Prorated</button>

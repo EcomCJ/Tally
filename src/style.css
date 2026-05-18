@@ -652,6 +652,26 @@ button, .iconbtn, .expand-icon, .bar-wrap, .bar { -webkit-app-region: no-drag; }
   grid-template-columns: 1fr 1fr;
   gap: 6px;
 }
+.inline-action {
+  -webkit-app-region: no-drag;
+  min-height: 31px;
+}
+.update-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+}
+.setting-hint[data-tone="ok"] {
+  color: var(--ok);
+}
+.setting-hint[data-tone="ready"] {
+  color: var(--codex-bright);
+}
+.setting-hint[data-tone="error"] {
+  color: var(--claude-deep);
+}
 .plan-edit {
   display: grid;
   grid-template-columns: 1fr 1fr;
