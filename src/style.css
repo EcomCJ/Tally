@@ -647,6 +647,11 @@ button, .iconbtn, .expand-icon, .bar-wrap, .bar { -webkit-app-region: no-drag; }
   background: var(--hover-bg);
   color: var(--foreground);
 }
+.presence-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
 .plan-edit {
   display: grid;
   grid-template-columns: 1fr 1fr;

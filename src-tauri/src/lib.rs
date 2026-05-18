@@ -1,7 +1,9 @@
+use std::sync::Mutex;
+
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, LogicalSize, Manager, WebviewWindow, WindowEvent,
 };
 
@@ -15,6 +17,10 @@ mod snapshot;
 const COLLAPSED: (f64, f64) = (272.0, 122.0);
 const EXPANDED: (f64, f64) = (640.0, 510.0);
 const APP_ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
+
+struct ShellState {
+    tray: Mutex<Option<TrayIcon>>,
+}
 
 /// Returns a fresh usage snapshot. `refresh_ms` is the user's UI refresh
 /// interval — the backend cache TTL is tied to this so each UI poll gets
@@ -63,6 +69,38 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+#[tauri::command]
+fn set_shell_visibility(
+    app: AppHandle,
+    window: WebviewWindow,
+    show_tray: bool,
+    show_taskbar: bool,
+) -> Result<(), String> {
+    if !show_tray && !show_taskbar {
+        return Err("At least one app surface must stay enabled.".to_string());
+    }
+
+    window
+        .set_skip_taskbar(!show_taskbar)
+        .map_err(|e| e.to_string())?;
+
+    let state = app.state::<ShellState>();
+    let mut tray = state.tray.lock().map_err(|e| e.to_string())?;
+    match (show_tray, tray.as_ref()) {
+        (true, None) => {
+            *tray = Some(build_tray(&app).map_err(|e| e.to_string())?);
+        }
+        (false, Some(existing)) => {
+            existing.set_visible(false).map_err(|e| e.to_string())?;
+        }
+        (true, Some(existing)) => {
+            existing.set_visible(true).map_err(|e| e.to_string())?;
+        }
+        (false, None) => {}
+    }
+    Ok(())
+}
+
 fn pin_top_right(window: &WebviewWindow) -> tauri::Result<()> {
     let monitor = match window.current_monitor()? {
         Some(m) => m,
@@ -85,12 +123,16 @@ fn pin_top_right(window: &WebviewWindow) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .manage(ShellState {
+            tray: Mutex::new(None),
+        })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             resize_window,
             set_window_size,
             hide_window,
             quit_app,
+            set_shell_visibility,
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").expect("main window missing");
@@ -124,36 +166,8 @@ pub fn run() {
                 Err(e) => eprintln!("[tally] snapshot error: {}", e),
             }
 
-            // System tray
-            let show_item = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)?;
-            let refresh_item = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &refresh_item, &quit_item])?;
-            let icon = app.default_window_icon().expect("icon missing").clone();
-
-            let _tray = TrayIconBuilder::with_id("main-tray")
-                .menu(&menu)
-                .icon(icon)
-                .tooltip("TALLY - Ai Usage Monitor")
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => toggle_main(app),
-                    "refresh" => {
-                        let _ = app.emit("refresh-now", ());
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        toggle_main(tray.app_handle());
-                    }
-                })
-                .build(app)?;
+            let tray = build_tray(app.handle())?;
+            *app.state::<ShellState>().tray.lock().unwrap() = Some(tray);
 
             Ok(())
         })
@@ -165,6 +179,38 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
+    let show_item = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)?;
+    let refresh_item = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &refresh_item, &quit_item])?;
+    let icon = app.default_window_icon().expect("icon missing").clone();
+
+    TrayIconBuilder::with_id("main-tray")
+        .menu(&menu)
+        .icon(icon)
+        .tooltip("TALLY - Ai Usage Monitor")
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => toggle_main(app),
+            "refresh" => {
+                let _ = app.emit("refresh-now", ());
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                toggle_main(tray.app_handle());
+            }
+        })
+        .build(app)
 }
 
 fn toggle_main(app: &AppHandle) {

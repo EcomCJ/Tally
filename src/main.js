@@ -14,12 +14,24 @@ const DEFAULT_SETTINGS = {
   theme: "dark", // "dark" | "light" | "auto"
   claudeTier: "MAX 5× · $100",
   codexTier:  "PRO 5× · $100",
+  showTrayIcon: true,
+  showTaskbarIcon: false,
   // ROI denominator behavior:
   //   "monthly"  → always divide by full monthly sub cost (legacy)
   //   "prorated" → divide by sub cost scaled to selected period
   //                e.g. 7D leverage = 7d_spend / (7/30 × monthly_sub)
   roiMode: "prorated",
 };
+
+function normalizeSettings(s) {
+  const next = { ...DEFAULT_SETTINGS, ...s };
+  next.showTrayIcon = next.showTrayIcon !== false;
+  next.showTaskbarIcon = next.showTaskbarIcon === true;
+  if (!next.showTrayIcon && !next.showTaskbarIcon) {
+    next.showTaskbarIcon = true;
+  }
+  return next;
+}
 
 // Days-in-period for proration. "today" is partial — we round up to 1 day.
 const PERIOD_DAYS = {
@@ -35,14 +47,15 @@ const PERIOD_DAYS = {
 function loadSettings() {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return { ...DEFAULT_SETTINGS };
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (!raw) return normalizeSettings({});
+    return normalizeSettings(JSON.parse(raw));
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    return normalizeSettings({});
   }
 }
 function saveSettings(s) {
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch {}
+  settings = normalizeSettings(s);
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {}
 }
 
 let settings = loadSettings();
@@ -309,7 +322,19 @@ async function showSettings() {
 }
 
 // ── Apply settings to DOM/timers
+async function applyShellVisibility() {
+  try {
+    await invoke("set_shell_visibility", {
+      showTray: settings.showTrayIcon,
+      showTaskbar: settings.showTaskbarIcon,
+    });
+  } catch (err) {
+    console.error("[usage-widget] shell visibility error:", err);
+  }
+}
+
 function applySettings() {
+  settings = normalizeSettings(settings);
   // Theme
   document.body.classList.remove("theme-dark", "theme-light", "theme-auto");
   document.body.classList.add(`theme-${settings.theme}`);
@@ -331,10 +356,17 @@ function applySettings() {
   document.querySelectorAll(".theme-btn[data-roi]").forEach((b) => {
     b.setAttribute("data-active", b.dataset.roi === settings.roiMode ? "true" : "false");
   });
+  document.querySelectorAll(".theme-btn[data-tray]").forEach((b) => {
+    b.setAttribute("data-active", String(settings.showTrayIcon) === b.dataset.tray ? "true" : "false");
+  });
+  document.querySelectorAll(".theme-btn[data-taskbar]").forEach((b) => {
+    b.setAttribute("data-active", String(settings.showTaskbarIcon) === b.dataset.taskbar ? "true" : "false");
+  });
   const claudeTierInput = el("optClaudeTier");
   if (claudeTierInput) claudeTierInput.value = settings.claudeTier;
   const codexTierInput  = el("optCodexTier");
   if (codexTierInput)  codexTierInput.value  = settings.codexTier;
+  void applyShellVisibility();
 }
 
 // Tiny visual ack that a control was registered.
@@ -401,6 +433,28 @@ function wireSettings() {
       ackPulse(btn);
     });
   });
+  document.querySelectorAll(".theme-btn[data-tray]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      settings.showTrayIcon = btn.dataset.tray === "true";
+      if (!settings.showTrayIcon && !settings.showTaskbarIcon) {
+        settings.showTaskbarIcon = true;
+      }
+      saveSettings(settings);
+      applySettings();
+      ackPulse(btn);
+    });
+  });
+  document.querySelectorAll(".theme-btn[data-taskbar]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      settings.showTaskbarIcon = btn.dataset.taskbar === "true";
+      if (!settings.showTrayIcon && !settings.showTaskbarIcon) {
+        settings.showTrayIcon = true;
+      }
+      saveSettings(settings);
+      applySettings();
+      ackPulse(btn);
+    });
+  });
   el("optClaudeTier")?.addEventListener("input", (e) => {
     settings.claudeTier = e.target.value;
     saveSettings(settings);
@@ -414,7 +468,7 @@ function wireSettings() {
     if (t) t.textContent = settings.codexTier || "PRO 5× · $100";
   });
   el("btnResetDefaults")?.addEventListener("click", () => {
-    settings = { ...DEFAULT_SETTINGS };
+    settings = normalizeSettings({});
     saveSettings(settings);
     applySettings();
     flashSaved("✓ Reset");
