@@ -1,4 +1,4 @@
-# Tally
+# TALLY - Ai Usage Monitor
 
 Live desktop widget that tracks your Claude Code + Codex CLI subscription usage in real time. Liquid-glass UI, zero servers, zero telemetry, zero tokens consumed.
 

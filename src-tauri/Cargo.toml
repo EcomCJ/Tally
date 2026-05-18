@@ -1,6 +1,6 @@
 [package]
 name = "tally"
-version = "0.1.14"
+version = "0.1.15"
 edition = "2021"
 rust-version = "1.77"
 
@@ -21,6 +21,8 @@ walkdir = "2"
 dirs = "5"
 anyhow = "1"
 ureq = { version = "2", features = ["tls", "json"], default-features = false }
+portable-pty = "0.9"
+regex = "1"
 
 [profile.release]
 codegen-units = 1

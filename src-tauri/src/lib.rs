@@ -124,7 +124,7 @@ pub fn run() {
             let _tray = TrayIconBuilder::with_id("main-tray")
                 .menu(&menu)
                 .icon(icon)
-                .tooltip("Tally")
+                .tooltip("TALLY - Ai Usage Monitor")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => toggle_main(app),
                     "refresh" => {
