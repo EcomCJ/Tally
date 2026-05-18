@@ -987,6 +987,12 @@ pub fn collect(refresh_ms: u64) -> Result<ClaudeStats> {
                 Ok(v) => v,
                 Err(_) => continue,
             };
+            let is_cowork_event = is_cowork_session
+                || parsed
+                    .session_id
+                    .as_deref()
+                    .map(|sid| cowork_ids.contains(sid))
+                    .unwrap_or(false);
             let ts = match parsed.timestamp {
                 Some(t) => t,
                 None => continue,
@@ -1030,8 +1036,8 @@ pub fn collect(refresh_ms: u64) -> Result<ClaudeStats> {
                 *stats.cost_by_entrypoint_7d.entry(ep).or_insert(0.0) += msg_cost;
             }
             // Cowork attribution: file lives under local-agent-mode-sessions
-            // OR matches a known cliSessionId from the cowork index.
-            if is_cowork_session {
+            // OR the event sessionId matches a known cliSessionId from the cowork index.
+            if is_cowork_event {
                 if ts >= cutoff_7d   { stats.cowork_cost_7d += msg_cost; }
                 if ts >= today_start { stats.cowork_cost_today += msg_cost; }
                 if ts >= mtd_start   { stats.cowork_cost_mtd += msg_cost; }

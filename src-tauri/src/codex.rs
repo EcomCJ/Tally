@@ -96,8 +96,6 @@ struct RateLimitWindow {
     used_percent: i64,
     #[serde(rename = "resetsAt")]
     resets_at: Option<i64>,
-    #[serde(rename = "windowDurationMins")]
-    window_duration_mins: Option<i64>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -470,25 +468,6 @@ fn fetch_rpc_rate_limits() -> Result<(CodexRateLimits, String, String, DateTime<
     Ok((rl, plan_label, plan_type_raw, Utc::now()))
 }
 
-// Tiny std-only "wait with timeout" via try_wait loop
-trait WaitTimeout {
-    fn wait_timeout(&mut self, dur: StdDuration) -> Result<()>;
-}
-impl WaitTimeout for std::process::Child {
-    fn wait_timeout(&mut self, dur: StdDuration) -> Result<()> {
-        let start = std::time::Instant::now();
-        while start.elapsed() < dur {
-            match self.try_wait()? {
-                Some(_) => return Ok(()),
-                None => std::thread::sleep(StdDuration::from_millis(50)),
-            }
-        }
-        let _ = self.kill();
-        let _ = self.wait();
-        Ok(())
-    }
-}
-
 // =====================================================================
 // Token totals (for ROI math): still aggregated from JSONL session files.
 // =====================================================================
@@ -518,8 +497,6 @@ struct CodexPayload {
 
 #[derive(Debug, Deserialize, Default)]
 struct CodexTokenInfo {
-    #[serde(default)]
-    total_token_usage: Option<CodexTokenUsageRaw>,
     /// Per-turn delta — the tokens consumed in just this turn.
     /// We use this for time-bucketing so a long-running session's
     /// activity gets attributed to the right day/hour.
