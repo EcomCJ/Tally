@@ -8,7 +8,7 @@ Live Windows desktop widget for tracking Claude Code and Codex CLI subscription 
 - Plan labels such as Pro, Max 5x, Max 20x, Plus, Pro 5x, and Team.
 - Token totals for input, output, cache read/write, cached input, and reasoning tokens.
 - Per-model cost accounting using public list-price estimates.
-- API-equivalent spend and ROI/leverage versus subscription cost.
+- API-equivalent ROI/leverage versus subscription cost.
 - Data views: `Now`, `Today`, `MTD`, `1D`, `7D`, `14D`, and `30D`.
 
 ## Vendor Coverage
@@ -16,7 +16,7 @@ Live Windows desktop widget for tracking Claude Code and Codex CLI subscription 
 | Vendor | Live Limits Source | Token Cost Source |
 |---|---|---|
 | Claude Code | Claude CLI `/usage`, with OAuth usage endpoint fallback | `~/.claude/projects/**/*.jsonl` plus Claude desktop Cowork session roots |
-| Codex CLI | local `codex app-server` JSON-RPC `account/rateLimits/read` | `~/.codex/sessions/**/*.jsonl` |
+| Codex CLI | ChatGPT `wham/usage` endpoint, with local `codex app-server` JSON-RPC fallback | `~/.codex/sessions/**/*.jsonl` |
 
 The app does not proxy your traffic or run a server. It reads local CLI files and calls the same vendor endpoints your authenticated tools already use.
 
@@ -28,7 +28,7 @@ If only one CLI is installed and authenticated, the widget collapses to a single
 
 The settings icon in the expanded panel opens:
 
-- Refresh interval: 15s, 30s, 60s, 2m, or 5m.
+- Refresh interval: 1 minute, 2 minutes, 5 minutes, or 10 minutes.
 - Glass opacity slider.
 - Theme: Dark, Light, or Auto.
 - Plan label overrides.
@@ -79,7 +79,7 @@ npm run build
 
 - Local processing only; no analytics and no telemetry.
 - Claude OAuth is read from `~/.claude/.credentials.json` and used for Anthropic Claude usage/profile requests.
-- Codex usage is read through local Codex CLI/session data.
+- Codex usage is read through ChatGPT/Codex authenticated usage endpoints and local Codex session data.
 - The updater checks the public GitHub Releases API only when you ask it to check for updates.
 - Tally writes local cache/history files under the OS cache/data directories, currently under `tally`.
 
