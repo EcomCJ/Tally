@@ -353,10 +353,33 @@ fn build_window(
             used_percent,
             resets_at: None,
             resets_label: if used_percent > 0.0 {
-                "Reset pending".to_string()
+                "pending".to_string()
             } else {
-                "Ready".to_string()
+                "ready".to_string()
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn stale_reset_label_does_not_repeat_reset_prefix() {
+        let state = build_window(26.0, Some(Utc::now() - Duration::minutes(5)), short_time);
+
+        assert_eq!(state.used_percent, 26.0);
+        assert!(state.resets_at.is_none());
+        assert_eq!(state.resets_label, "pending");
+    }
+
+    #[test]
+    fn empty_window_without_reset_is_ready() {
+        let state = build_window(0.0, None, short_time);
+
+        assert_eq!(state.used_percent, 0.0);
+        assert_eq!(state.resets_label, "ready");
     }
 }
