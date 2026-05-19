@@ -328,14 +328,14 @@ fn short_date_time(dt: DateTime<Utc>) -> String {
     local.format("%a %-I:%M %p").to_string()
 }
 
-/// Build a WindowState, normalizing past resets_at labels.
+/// Build a WindowState, normalizing past resets_at windows.
 ///
 /// Claude/Codex rate-limit APIs return a `resets_at` that points at the END
 /// of the *current* active window. Once that timestamp passes with no new
 /// activity, the server keeps returning the same (now-stale) timestamp until
-/// the user sends a new message that starts a fresh window. A stale or absent
-/// timestamp should not erase a valid utilization percentage; it only means we
-/// cannot show an exact reset clock.
+/// the user sends a new message that starts a fresh window. A stale timestamp
+/// means the old window is over, so the active window should read as reset even
+/// if cached/provider data still carries the previous utilization.
 fn build_window(
     raw_percent: f64,
     resets_at: Option<DateTime<Utc>>,
@@ -348,6 +348,11 @@ fn build_window(
             used_percent,
             resets_at: Some(t),
             resets_label: fmt(t),
+        },
+        Some(_) => WindowState {
+            used_percent: 0.0,
+            resets_at: None,
+            resets_label: "ready".to_string(),
         },
         _ => WindowState {
             used_percent,
@@ -370,8 +375,16 @@ mod tests {
     fn stale_reset_label_does_not_repeat_reset_prefix() {
         let state = build_window(26.0, Some(Utc::now() - Duration::minutes(5)), short_time);
 
-        assert_eq!(state.used_percent, 26.0);
+        assert_eq!(state.used_percent, 0.0);
         assert!(state.resets_at.is_none());
+        assert_eq!(state.resets_label, "ready");
+    }
+
+    #[test]
+    fn missing_reset_keeps_percent_pending() {
+        let state = build_window(26.0, None, short_time);
+
+        assert_eq!(state.used_percent, 26.0);
         assert_eq!(state.resets_label, "pending");
     }
 
