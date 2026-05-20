@@ -286,11 +286,13 @@ async function refresh() {
 
 // Auto-fit HEIGHT to content. Width stays at the canonical state width so
 // a mid-transition measurement can't lock the window narrow.
-const WIDTH_BY_STATE = { collapsed: 272, expanded: 640, settings: 640 };
+const WIDTH_BY_STATE = { collapsed: 272, expanded: 640, compact: 640, settings: 640 };
 async function fitWindowToContent() {
   let target, stateKey;
   if (document.body.classList.contains("state-expanded")) {
     target = el("panel");    stateKey = "expanded";
+  } else if (document.body.classList.contains("state-compact")) {
+    target = el("panel");    stateKey = "compact";
   } else if (document.body.classList.contains("state-settings")) {
     target = el("settings"); stateKey = "settings";
   } else {
@@ -305,20 +307,26 @@ async function fitWindowToContent() {
 
 // ── State toggle
 async function expand() {
-  document.body.classList.remove("state-collapsed", "state-settings");
+  document.body.classList.remove("state-collapsed", "state-compact", "state-settings");
   document.body.classList.add("state-expanded");
   try { await invoke("resize_window", { expanded: true }); } catch (e) {}
   // After layout settles, shrink to exact content height
   setTimeout(fitWindowToContent, 50);
 }
+async function compact() {
+  document.body.classList.remove("state-collapsed", "state-expanded", "state-settings");
+  document.body.classList.add("state-compact");
+  try { await invoke("resize_window", { expanded: true }); } catch (e) {}
+  setTimeout(fitWindowToContent, 50);
+}
 async function collapse() {
-  document.body.classList.remove("state-expanded", "state-settings");
+  document.body.classList.remove("state-expanded", "state-compact", "state-settings");
   document.body.classList.add("state-collapsed");
   try { await invoke("resize_window", { expanded: false }); } catch (e) {}
   setTimeout(fitWindowToContent, 50);
 }
 async function showSettings() {
-  document.body.classList.remove("state-collapsed", "state-expanded");
+  document.body.classList.remove("state-collapsed", "state-expanded", "state-compact");
   document.body.classList.add("state-settings");
   try { await invoke("resize_window", { expanded: true }); } catch (e) {}
   setTimeout(fitWindowToContent, 50);
@@ -565,6 +573,8 @@ function setPeriod(period) {
 window.addEventListener("DOMContentLoaded", () => {
   el("btnExpand")?.addEventListener("click", expand);
   el("pill")?.addEventListener("dblclick", expand);
+  el("btnCompact")?.addEventListener("click", compact);
+  el("btnFullView")?.addEventListener("click", expand);
   el("btnCollapse")?.addEventListener("click", collapse);
   el("btnRefresh")?.addEventListener("click", manualRefresh);
 

@@ -108,6 +108,8 @@ body.state-collapsed #panel,
 body.state-collapsed #settings { display: none; }
 body.state-expanded  #pill,
 body.state-expanded  #settings { display: none; }
+body.state-compact   #pill,
+body.state-compact   #settings { display: none; }
 body.state-settings  #pill,
 body.state-settings  #panel    { display: none; }
 
@@ -317,6 +319,12 @@ body.theme-light .weekly-tick {
   padding: 0;
 }
 .iconbtn:hover { background: var(--hover-bg); }
+body.state-expanded #btnFullView,
+body.state-compact #btnCompact,
+body.state-collapsed #btnFullView,
+body.state-collapsed #btnCompact {
+  display: none;
+}
 .live-tag {
   display: inline-flex; align-items: center; gap: 5px;
   margin-top: 3px;
@@ -481,6 +489,34 @@ body.theme-light .card h4 .tier {
 .stat-row .v { color: var(--foreground); font-variant-numeric: tabular-nums; font-weight: 500; }
 .stat-row .v.claude-v { color: var(--claude-bright); }
 .stat-row .v.codex-v { color: var(--codex-bright); }
+
+body.state-compact .panel {
+  padding-bottom: 14px;
+}
+body.state-compact .panel-head {
+  margin-bottom: 10px;
+}
+body.state-compact .brand-cards {
+  margin-bottom: 0;
+}
+body.state-compact .card {
+  padding: 11px 14px 10px;
+}
+body.state-compact .card h4 {
+  margin-bottom: 7px;
+}
+body.state-compact .separator,
+body.state-compact .stats-grid,
+body.state-compact .data-view {
+  display: none;
+}
+body.state-compact .ring-row {
+  margin-bottom: 0;
+}
+body.state-compact .roi {
+  margin-top: 10px;
+  padding: 10px 14px;
+}
 
 .roi {
   padding: 12px 14px;
