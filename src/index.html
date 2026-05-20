@@ -42,12 +42,18 @@
   <div class="panel glass" id="panel">
     <div class="panel-head" data-drag>
       <div>
-        <h3>TALLY - Ai Usage Monitor</h3>
+        <div class="compact-brand" aria-hidden="true">
+          <img src="assets/tally-icon.png" alt="" />
+          <span>Tally</span>
+        </div>
+        <h3><span class="panel-title-full">TALLY - Ai Usage Monitor</span></h3>
         <div class="desc">All percentages = used of cap · live from local logs</div>
       </div>
       <div class="head-right">
-        <div class="head-time" id="headTime">—</div>
-        <div class="live-tag"><span class="pulse"></span> <span id="headLive">live</span></div>
+        <div class="head-status">
+          <div class="head-time" id="headTime">—</div>
+          <div class="live-tag"><span class="pulse"></span> <span id="headLive">live</span></div>
+        </div>
         <div class="head-actions">
           <button class="iconbtn" id="btnRefresh" title="Refresh now">↻</button>
           <button class="iconbtn" id="btnSettings" title="Settings">⚙</button>
@@ -276,6 +282,17 @@
             <span class="setting-hint" id="updateStatus" data-tone="muted">GitHub Releases</span>
             <button class="btn-secondary inline-action" id="btnDownloadUpdate" style="display:none;">Open release</button>
           </div>
+        </div>
+
+        <div class="setting-row">
+          <label>Compact data view</label>
+          <div class="theme-toggle">
+            <button class="theme-btn" data-compact-data-view="false" data-active="true">Hide</button>
+            <button class="theme-btn" data-compact-data-view="true">Show</button>
+          </div>
+          <span class="setting-hint" style="display:block; margin-top:4px;">
+            Shows the date-range picker under compact gauges when enabled.
+          </span>
         </div>
 
         <div class="setting-row">

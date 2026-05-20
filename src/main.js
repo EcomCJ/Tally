@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS = {
   showTrayIcon: true,
   showTaskbarIcon: false,
   autoCheckUpdates: true,
+  compactDataView: false,
   // ROI denominator behavior:
   //   "monthly"  → always divide by full monthly sub cost (legacy)
   //   "prorated" → divide by sub cost scaled to selected period
@@ -28,6 +29,7 @@ function normalizeSettings(s) {
   const next = { ...DEFAULT_SETTINGS, ...s };
   next.showTrayIcon = next.showTrayIcon !== false;
   next.showTaskbarIcon = next.showTaskbarIcon === true;
+  next.compactDataView = next.compactDataView === true;
   if (!next.showTrayIcon && !next.showTaskbarIcon) {
     next.showTaskbarIcon = true;
   }
@@ -391,6 +393,7 @@ function applySettings() {
   document.body.classList.add(`theme-${settings.theme}`);
   // Glass opacity
   document.documentElement.style.setProperty("--glass-alpha", settings.glassAlpha);
+  document.body.classList.toggle("compact-data-view-on", settings.compactDataView);
   // Refresh interval
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(refresh, settings.refreshMs);
@@ -415,6 +418,9 @@ function applySettings() {
   });
   document.querySelectorAll(".theme-btn[data-updates]").forEach((b) => {
     b.setAttribute("data-active", String(settings.autoCheckUpdates) === b.dataset.updates ? "true" : "false");
+  });
+  document.querySelectorAll(".theme-btn[data-compact-data-view]").forEach((b) => {
+    b.setAttribute("data-active", String(settings.compactDataView) === b.dataset.compactDataView ? "true" : "false");
   });
   const claudeTierInput = el("optClaudeTier");
   if (claudeTierInput) claudeTierInput.value = settings.claudeTier;
@@ -516,6 +522,15 @@ function wireSettings() {
       applySettings();
       ackPulse(btn);
       if (settings.autoCheckUpdates) checkForUpdates(false);
+    });
+  });
+  document.querySelectorAll(".theme-btn[data-compact-data-view]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      settings.compactDataView = btn.dataset.compactDataView === "true";
+      saveSettings(settings);
+      applySettings();
+      setTimeout(fitWindowToContent, 30);
+      ackPulse(btn);
     });
   });
   el("btnCheckUpdate")?.addEventListener("click", () => checkForUpdates(true));
