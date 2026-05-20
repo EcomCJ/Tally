@@ -693,7 +693,7 @@ body.theme-light .roi::before {
   border: none;
   border-radius: 16px;
   box-shadow: inset 0 1px 0 var(--glass-inner-top);
-  padding: 18px 14px;
+  padding: 14px 14px 12px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -721,13 +721,13 @@ body.theme-light .settings {
 }
 .settings-head {
   display: flex; justify-content: space-between; align-items: center;
-  margin-bottom: 14px;
-  padding-bottom: 12px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--separator);
 }
 .settings-head h3 {
   margin: 0;
-  font-size: 14px; font-weight: 600;
+  font-size: 13px; font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--foreground);
 }
@@ -735,7 +735,7 @@ body.theme-light .settings {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 10px;
   overflow-y: auto;
   overflow-x: hidden;
   min-width: 0;
@@ -743,10 +743,10 @@ body.theme-light .settings {
 .setting-row {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 .setting-row label {
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--muted-fg);
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -756,7 +756,7 @@ body.theme-light .settings {
   align-items: baseline;
 }
 .setting-value {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--foreground);
   font-variant-numeric: tabular-nums;
   font-weight: 500;
@@ -770,9 +770,9 @@ body.theme-light .settings {
   border: 1px solid var(--input-border);
   color: var(--foreground);
   font-family: inherit;
-  font-size: 12px;
-  padding: 7px 10px;
-  border-radius: 7px;
+  font-size: 11px;
+  padding: 5px 8px;
+  border-radius: 6px;
   outline: none;
 }
 .setting-row select:focus,
@@ -803,8 +803,8 @@ body.theme-light .settings {
   gap: 0;
   background: var(--input-bg);
   border: 1px solid var(--input-border);
-  border-radius: 7px;
-  padding: 3px;
+  border-radius: 6px;
+  padding: 2px;
 }
 .theme-btn {
   -webkit-app-region: no-drag;
@@ -813,9 +813,9 @@ body.theme-light .settings {
   border: none;
   color: var(--muted-fg);
   font-family: inherit;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 500;
-  padding: 6px 10px;
+  padding: 5px 8px;
   border-radius: 5px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
@@ -827,18 +827,22 @@ body.theme-light .settings {
 .presence-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px;
+  gap: 5px;
 }
 .inline-action {
   -webkit-app-region: no-drag;
-  min-height: 31px;
+  min-height: 27px;
 }
 .update-line {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  min-height: 28px;
+  min-height: 22px;
+}
+.setting-hint {
+  font-size: 9.5px;
+  line-height: 1.25;
 }
 .setting-hint[data-tone="ok"] {
   color: var(--ok);
@@ -852,14 +856,14 @@ body.theme-light .settings {
 .plan-edit {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px;
+  gap: 5px;
 }
 .settings-footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-top: auto;
-  padding-top: 12px;
+  padding-top: 8px;
   border-top: 1px solid var(--separator);
 }
 .btn-secondary {
@@ -868,9 +872,9 @@ body.theme-light .settings {
   border: 1px solid var(--input-border);
   color: var(--foreground);
   font-family: inherit;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 500;
-  padding: 6px 12px;
+  padding: 5px 10px;
   border-radius: 6px;
   cursor: pointer;
 }
@@ -882,9 +886,9 @@ body.theme-light .settings {
   border: 1px solid var(--claude-deep);
   color: #fff;
   font-family: inherit;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 7px 18px;
+  padding: 6px 16px;
   border-radius: 6px;
   cursor: pointer;
   letter-spacing: 0.01em;
