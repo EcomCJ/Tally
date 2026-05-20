@@ -15,7 +15,7 @@ Live Windows desktop widget for tracking Claude Code and Codex CLI subscription 
 
 | Vendor | Live Limits Source | Token Cost Source |
 |---|---|---|
-| Claude Code | Claude CLI `/usage`, with OAuth usage endpoint fallback | `~/.claude/projects/**/*.jsonl` plus Claude desktop Cowork session roots |
+| Claude Code | Anthropic OAuth usage endpoint, with Claude CLI `/usage`, optional Claude web session, and local cache fallback | `~/.claude/projects/**/*.jsonl` plus Claude desktop Cowork session roots |
 | Codex CLI | ChatGPT `wham/usage` endpoint, with local `codex app-server` JSON-RPC fallback | `~/.codex/sessions/**/*.jsonl` |
 
 The app does not proxy your traffic or run a server. It reads local CLI files and calls the same vendor endpoints your authenticated tools already use.
@@ -88,8 +88,8 @@ npm run build
 Claude usage endpoints can rate-limit. Tally:
 
 - Caches live data in-process.
-- Persists the last successful Claude usage response to disk.
-- Falls back to cached values if a live request fails or returns 429.
+- Persists the last successful Claude usage response to disk and appends Claude limit samples to local history.
+- Falls back from OAuth to Claude CLI `/usage`, then optional Claude web session (`TALLY_CLAUDE_COOKIE` or `TALLY_CLAUDE_SESSION_KEY`); cached values are used only if live sources fail or OAuth is cooling down after 429.
 - Recovers automatically on the next successful refresh.
 
 You'll see a `data: Nh ago` stale indicator under each vendor card if cached values are being served.

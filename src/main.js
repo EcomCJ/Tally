@@ -104,22 +104,23 @@ function fmtPct(p) {
   return Math.round(p) + "%";
 }
 
-function fmtAge(iso) {
-  if (!iso) return { text: "data: never seen", cls: "cold" };
+function fmtAge(iso, source = null) {
+  const prefix = source ? `data: ${source} ` : "data: ";
+  if (!iso) return { text: prefix + "never seen", cls: "cold" };
   const then = new Date(iso).getTime();
   const ageSec = (Date.now() - then) / 1000;
   let text, cls;
-  if (ageSec < 60)        { text = "data: just now";                 cls = "fresh"; }
-  else if (ageSec < 3600) { text = `data: ${Math.round(ageSec/60)}m ago`; cls = ageSec < 300 ? "fresh" : "stale"; }
-  else if (ageSec < 86400){ text = `data: ${Math.round(ageSec/3600)}h ago`; cls = "stale"; }
-  else                    { text = `data: ${Math.round(ageSec/86400)}d ago`; cls = "cold"; }
+  if (ageSec < 60)        { text = prefix + "just now";                 cls = "fresh"; }
+  else if (ageSec < 3600) { text = `${prefix}${Math.round(ageSec/60)}m ago`; cls = ageSec < 300 ? "fresh" : "stale"; }
+  else if (ageSec < 86400){ text = `${prefix}${Math.round(ageSec/3600)}h ago`; cls = "stale"; }
+  else                    { text = `${prefix}${Math.round(ageSec/86400)}d ago`; cls = "cold"; }
   return { text, cls };
 }
 
-function setFreshness(elementId, iso) {
+function setFreshness(elementId, iso, source = null) {
   const e = el(elementId);
   if (!e) return;
-  const { text, cls } = fmtAge(iso);
+  const { text, cls } = fmtAge(iso, source);
   e.textContent = text;
   e.classList.remove("fresh", "stale", "cold");
   e.classList.add(cls);
@@ -200,7 +201,7 @@ function render(snap) {
   // Tier labels respect user override from settings
   if (showClaude) {
     el("claudeTier").textContent = settings.claudeTier || c.tier;
-    setFreshness("claudeFreshness", c.last_event_at);
+    setFreshness("claudeFreshness", c.data_updated_at || c.last_event_at, c.data_source);
     setRing("claudeRing5h", c.five_hour.used_percent);
     setRing("claudeRingWk", c.weekly.used_percent);
     el("claudePct5h").textContent = fmtPct(c.five_hour.used_percent);
@@ -218,7 +219,7 @@ function render(snap) {
   }
   if (showCodex) {
     el("codexTier").textContent  = settings.codexTier  || x.tier;
-    setFreshness("codexFreshness",  x.last_event_at);
+    setFreshness("codexFreshness",  x.data_updated_at || x.last_event_at, x.data_source);
     setRing("codexRing5h",  x.five_hour.used_percent);
     setRing("codexRingWk",  x.weekly.used_percent);
     el("codexPct5h").textContent  = fmtPct(x.five_hour.used_percent);

@@ -1,6 +1,6 @@
-use super::{ClaudeLiveLimits, SubQuota};
+use super::{ClaudeLimitSource, ClaudeLiveLimits, SubQuota};
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveTime, TimeZone, Utc, Weekday};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use regex::Regex;
 use std::io::{Read, Write};
@@ -89,6 +89,14 @@ pub(super) fn fetch_cli_usage_limits() -> Result<ClaudeLiveLimits> {
     parse_cli_usage_limits(&output)
 }
 
+pub(crate) fn claude_cli_available() -> bool {
+    std::process::Command::new("claude")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 fn usage_output_ready(text: &str) -> bool {
     let clean = strip_ansi(text);
     let normalized: String = clean
@@ -137,6 +145,8 @@ fn parse_cli_usage_limits(raw: &str) -> Result<ClaudeLiveLimits> {
     }
 
     Ok(ClaudeLiveLimits {
+        source: ClaudeLimitSource::Cli,
+        fetched_at: Utc::now(),
         five_hour_percent: session,
         five_hour_resets_at: session_reset,
         weekly_percent: weekly.unwrap_or(0.0),
@@ -253,25 +263,87 @@ fn reset_from_line(line: &str) -> Option<DateTime<Utc>> {
     static REL: OnceLock<Regex> = OnceLock::new();
     let rel = REL.get_or_init(|| {
         Regex::new(
-            r"(?i)resets?\s+in\s+(?:(\d+)\s*h(?:r|our)?s?\s*)?(?:(\d+)\s*m(?:in(?:ute)?s?)?)?",
+            r"(?i)resets?\s+in\s+(?:(\d+)\s*d(?:ay)?s?\s*)?(?:(\d+)\s*h(?:r|our)?s?\s*)?(?:(\d+)\s*m(?:in(?:ute)?s?)?)?",
         )
         .unwrap()
     });
     if let Some(caps) = rel.captures(line) {
-        let hours = caps
+        let days = caps
             .get(1)
             .and_then(|m| m.as_str().parse::<i64>().ok())
             .unwrap_or(0);
-        let mins = caps
+        let hours = caps
             .get(2)
             .and_then(|m| m.as_str().parse::<i64>().ok())
             .unwrap_or(0);
-        if hours > 0 || mins > 0 {
-            return Some(now + Duration::hours(hours) + Duration::minutes(mins));
+        let mins = caps
+            .get(3)
+            .and_then(|m| m.as_str().parse::<i64>().ok())
+            .unwrap_or(0);
+        if days > 0 || hours > 0 || mins > 0 {
+            return Some(
+                now + Duration::days(days) + Duration::hours(hours) + Duration::minutes(mins),
+            );
         }
     }
 
-    None
+    parse_weekday_reset(line)
+}
+
+fn parse_weekday_reset(line: &str) -> Option<DateTime<Utc>> {
+    static ABS: OnceLock<Regex> = OnceLock::new();
+    let abs = ABS.get_or_init(|| {
+        Regex::new(r"(?i)resets?\s+([a-z]{3,9})\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)").unwrap()
+    });
+    let caps = abs.captures(line)?;
+    let weekday = weekday_from_text(caps.get(1)?.as_str())?;
+    let hour_raw = caps.get(2)?.as_str().parse::<u32>().ok()?;
+    let minute = caps
+        .get(3)
+        .and_then(|m| m.as_str().parse::<u32>().ok())
+        .unwrap_or(0);
+    let meridiem = caps.get(4)?.as_str().to_ascii_lowercase();
+    if hour_raw == 0 || hour_raw > 12 || minute > 59 {
+        return None;
+    }
+    let hour = match meridiem.as_str() {
+        "am" if hour_raw == 12 => 0,
+        "am" => hour_raw,
+        "pm" if hour_raw == 12 => 12,
+        "pm" => hour_raw + 12,
+        _ => return None,
+    };
+    let time = NaiveTime::from_hms_opt(hour, minute, 0)?;
+    let now = Local::now();
+    let today = now.date_naive();
+    let current = now.weekday().num_days_from_monday() as i64;
+    let target = weekday.num_days_from_monday() as i64;
+    let mut days_ahead = (target - current).rem_euclid(7);
+    let mut candidate_date = today + Duration::days(days_ahead);
+    let mut candidate = Local
+        .from_local_datetime(&candidate_date.and_time(time))
+        .single()?;
+    if candidate <= now {
+        days_ahead += 7;
+        candidate_date = today + Duration::days(days_ahead);
+        candidate = Local
+            .from_local_datetime(&candidate_date.and_time(time))
+            .single()?;
+    }
+    Some(candidate.with_timezone(&Utc))
+}
+
+fn weekday_from_text(text: &str) -> Option<Weekday> {
+    match &text.to_ascii_lowercase()[..3.min(text.len())] {
+        "mon" => Some(Weekday::Mon),
+        "tue" => Some(Weekday::Tue),
+        "wed" => Some(Weekday::Wed),
+        "thu" => Some(Weekday::Thu),
+        "fri" => Some(Weekday::Fri),
+        "sat" => Some(Weekday::Sat),
+        "sun" => Some(Weekday::Sun),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -302,6 +374,8 @@ mod tests {
 
         assert_eq!(limits.five_hour_percent, 18.0);
         assert_eq!(limits.weekly_percent, 9.0);
+        assert_eq!(limits.sub_quotas[0].utilization, 2.0);
+        assert!(limits.weekly_resets_at.is_some());
     }
 
     #[test]
@@ -325,5 +399,13 @@ mod tests {
         .to_string();
 
         assert!(err.contains("missing Current session"));
+    }
+
+    #[test]
+    fn parses_weekday_reset_time_from_claude_cli() {
+        let reset = reset_from_line("Resets Sun 8:00 PM").unwrap();
+
+        assert!(reset > Utc::now());
+        assert!(reset <= Utc::now() + Duration::days(7));
     }
 }

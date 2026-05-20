@@ -19,6 +19,8 @@ pub struct BrandSnapshot {
     pub name: String,
     pub tier: String,
     pub color: String,
+    pub data_source: Option<String>,
+    pub data_updated_at: Option<DateTime<Utc>>,
     pub five_hour: WindowState,
     pub weekly: WindowState,
     pub periods: std::collections::HashMap<String, PeriodView>,
@@ -189,6 +191,8 @@ pub fn build(refresh_ms: u64) -> Result<UsageSnapshot> {
         name: "Claude Code".to_string(),
         tier: claude_plan.label.clone(),
         color: "#D97757".to_string(),
+        data_source: claude_stats.limit_source.map(|s| s.label().to_string()),
+        data_updated_at: claude_stats.limit_fetched_at,
         five_hour: build_window(
             claude_stats.five_hour_percent,
             claude_stats.next_5h_reset,
@@ -245,6 +249,8 @@ pub fn build(refresh_ms: u64) -> Result<UsageSnapshot> {
         name: "Codex".to_string(),
         tier: codex_plan.label.clone(),
         color: "#10A37F".to_string(),
+        data_source: None,
+        data_updated_at: None,
         five_hour: build_window(
             codex_stats.rate_limits.primary_used_percent,
             codex_stats.rate_limits.primary_resets_at,
