@@ -198,7 +198,7 @@ function render(snap) {
   el("headTime").textContent = new Date(snap.updated_at).toLocaleString([], {
     month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
   });
-  el("headLive").textContent = "live";
+  el("headLive").textContent = "LIVE";
 
   // Tier labels respect user override from settings
   if (showClaude) {
@@ -277,7 +277,7 @@ async function refresh() {
   try {
     const snap = await invoke("get_snapshot", { refreshMs: settings.refreshMs });
     render(snap);
-    if (liveEl) liveEl.textContent = "live";
+    if (liveEl) liveEl.textContent = "LIVE";
     // Refit window to content (handles freshness tag wrapping etc.)
     setTimeout(fitWindowToContent, 30);
   } catch (err) {
