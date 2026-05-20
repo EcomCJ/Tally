@@ -287,16 +287,14 @@ body.theme-light .weekly-tick {
   position: relative; z-index: 1;
 }
 .panel-head h3 {
-  margin: 0;
-  font-size: 14px; font-weight: 600;
-  letter-spacing: -0.01em;
+  display: none;
 }
 .panel-head .desc {
   font-size: 10.5px; color: var(--muted-fg);
-  margin-top: 3px;
+  margin-top: 5px;
 }
 .compact-brand {
-  display: none;
+  display: inline-flex;
   align-items: center;
   gap: 7px;
   color: var(--foreground);
@@ -528,9 +526,6 @@ body.state-compact .panel-head {
 body.state-compact .panel-head h3,
 body.state-compact .panel-head .desc {
   display: none;
-}
-body.state-compact .compact-brand {
-  display: inline-flex;
 }
 body.state-compact .head-right {
   display: flex;
