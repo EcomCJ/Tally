@@ -77,19 +77,44 @@ fn fetch_cli_usage_limits_once(timeout: StdDuration) -> Result<ClaudeLiveLimits>
         }
     });
 
-    std::thread::sleep(StdDuration::from_millis(2200));
-    while rx.try_recv().is_ok() {}
+    let mut output = String::new();
+    let mut answered_dsr_count = 0;
+    let mut trust_answered = false;
+    let mut trust_answered_at: Option<Instant> = None;
+    let startup_started = Instant::now();
+    while startup_started.elapsed() < StdDuration::from_secs(10) {
+        while let Ok(chunk) = rx.try_recv() {
+            output.push_str(&chunk);
+        }
+        answer_terminal_position_queries(&output, &mut writer, &mut answered_dsr_count)?;
+        if !trust_answered && terminal_needs_trust_confirm(&output) {
+            writer.write_all(b"\r")?;
+            writer.flush()?;
+            trust_answered = true;
+            trust_answered_at = Some(Instant::now());
+        }
+        if terminal_ready_for_command(&output)
+            || trust_answered_at
+                .map(|t| t.elapsed() >= StdDuration::from_millis(2200))
+                .unwrap_or(false)
+            || (output.is_empty() && startup_started.elapsed() >= StdDuration::from_secs(3))
+        {
+            break;
+        }
+        std::thread::sleep(StdDuration::from_millis(120));
+    }
+    output.clear();
     writer.write_all(b"/usage\r")?;
     writer.flush()?;
 
     let started = Instant::now();
-    let mut output = String::new();
     let mut first_relevant_at: Option<Instant> = None;
     let mut last_enter_at = Instant::now();
     while started.elapsed() < timeout {
         while let Ok(chunk) = rx.try_recv() {
             output.push_str(&chunk);
         }
+        answer_terminal_position_queries(&output, &mut writer, &mut answered_dsr_count)?;
         let lower = output.to_lowercase();
         let normalized = lower
             .chars()
@@ -123,21 +148,56 @@ fn fetch_cli_usage_limits_once(timeout: StdDuration) -> Result<ClaudeLiveLimits>
         output.push_str(&chunk);
     }
 
+    if std::env::var_os("TALLY_CLAUDE_DEBUG_CLI_OUTPUT").is_some() {
+        dump_cli_output_tail(&output);
+    }
+
     parse_cli_usage_limits(&output).map_err(|err| {
         if std::env::var_os("TALLY_CLAUDE_DEBUG_CLI_OUTPUT").is_some() {
-            let clean = strip_ansi(&output);
-            let tail = clean
-                .chars()
-                .rev()
-                .take(1800)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>();
-            eprintln!("[tally] Claude CLI /usage raw tail:\n{tail}");
+            dump_cli_output_tail(&output);
         }
         err
     })
+}
+
+fn dump_cli_output_tail(output: &str) {
+    let clean = strip_ansi(output);
+    let tail = clean
+        .chars()
+        .rev()
+        .take(1800)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    eprintln!("[tally] Claude CLI /usage raw tail:\n{tail}");
+}
+
+fn answer_terminal_position_queries(
+    output: &str,
+    writer: &mut Box<dyn Write + Send>,
+    answered_dsr_count: &mut usize,
+) -> Result<()> {
+    while output.matches("\x1b[6n").count() > *answered_dsr_count {
+        writer.write_all(b"\x1b[1;1R")?;
+        writer.flush()?;
+        *answered_dsr_count += 1;
+    }
+    Ok(())
+}
+
+fn terminal_needs_trust_confirm(output: &str) -> bool {
+    let normalized = normalize_label(&strip_ansi(output));
+    normalized.contains("quicksafetycheck")
+        || normalized.contains("doyoutrustthefiles")
+        || normalized.contains("yesitrustthisfolder")
+}
+
+fn terminal_ready_for_command(output: &str) -> bool {
+    let normalized = normalize_label(&strip_ansi(output));
+    normalized.contains("forshortcuts")
+        || normalized.contains("welcomeback")
+        || normalized.contains("tryhowdoilog")
 }
 
 fn should_retry_cli_probe(err: &anyhow::Error) -> bool {
@@ -186,20 +246,32 @@ fn parse_cli_usage_limits(raw: &str) -> Result<ClaudeLiveLimits> {
     let lines: Vec<&str> = panel.lines().collect();
     let normalized: Vec<String> = lines.iter().map(|l| normalize_label(l)).collect();
 
-    let session = extract_percent_after("currentsession", &lines, &normalized);
-    let weekly = extract_percent_after("currentweekallmodels", &lines, &normalized)
+    let session = extract_percent_after_compact("currentsession", panel)
+        .or_else(|| extract_percent_after("currentsession", &lines, &normalized));
+    let weekly = extract_percent_after_compact("currentweekallmodels", panel)
+        .or_else(|| extract_percent_after("currentweekallmodels", &lines, &normalized))
+        .or_else(|| extract_percent_after_compact("weeklylimits", panel))
         .or_else(|| extract_percent_after("weeklylimits", &lines, &normalized));
-    let sonnet = extract_percent_after("currentweeksonnetonly", &lines, &normalized)
+    let sonnet = extract_percent_after_compact("currentweeksonnetonly", panel)
+        .or_else(|| extract_percent_after("currentweeksonnetonly", &lines, &normalized))
+        .or_else(|| extract_percent_after_compact("currentweeksonnet", panel))
         .or_else(|| extract_percent_after("currentweeksonnet", &lines, &normalized))
+        .or_else(|| extract_percent_after_compact("sonnetonly", panel))
         .or_else(|| extract_percent_after("sonnetonly", &lines, &normalized));
 
     let session = session
         .ok_or_else(|| anyhow!("Claude CLI /usage parse failed: missing Current session"))?;
-    let session_reset = extract_reset_after("currentsession", &lines, &normalized);
-    let weekly_reset = extract_reset_after("currentweekallmodels", &lines, &normalized)
+    let session_reset = extract_reset_after_compact("currentsession", panel)
+        .or_else(|| extract_reset_after("currentsession", &lines, &normalized));
+    let weekly_reset = extract_reset_after_compact("currentweekallmodels", panel)
+        .or_else(|| extract_reset_after("currentweekallmodels", &lines, &normalized))
+        .or_else(|| extract_reset_after_compact("weeklylimits", panel))
         .or_else(|| extract_reset_after("weeklylimits", &lines, &normalized));
-    let sonnet_reset = extract_reset_after("currentweeksonnetonly", &lines, &normalized)
+    let sonnet_reset = extract_reset_after_compact("currentweeksonnetonly", panel)
+        .or_else(|| extract_reset_after("currentweeksonnetonly", &lines, &normalized))
+        .or_else(|| extract_reset_after_compact("currentweeksonnet", panel))
         .or_else(|| extract_reset_after("currentweeksonnet", &lines, &normalized))
+        .or_else(|| extract_reset_after_compact("sonnetonly", panel))
         .or_else(|| extract_reset_after("sonnetonly", &lines, &normalized));
 
     let mut sub_quotas = Vec::new();
@@ -334,6 +406,63 @@ fn extract_percent_after(label: &str, lines: &[&str], normalized: &[String]) -> 
     None
 }
 
+fn extract_percent_after_compact(label: &str, panel: &str) -> Option<f64> {
+    let compact = compact_usage_text(panel);
+    let tail = compact_tail_after(&compact, label)?;
+    static PCT: OnceLock<Regex> = OnceLock::new();
+    let re = PCT.get_or_init(|| Regex::new(r"([0-9]{1,3}(?:\.[0-9]+)?)%([a-z]{0,24})").unwrap());
+    for caps in re.captures_iter(tail) {
+        let raw = caps.get(1)?.as_str().parse::<f64>().ok()?.clamp(0.0, 100.0);
+        let suffix = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        if suffix.starts_with("used")
+            || suffix.starts_with("spent")
+            || suffix.starts_with("consumed")
+        {
+            return Some(raw);
+        }
+        if suffix.starts_with("left")
+            || suffix.starts_with("remaining")
+            || suffix.starts_with("available")
+        {
+            return Some(100.0 - raw);
+        }
+    }
+    None
+}
+
+fn compact_usage_text(text: &str) -> String {
+    strip_ansi(text)
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '%' | ':' | ','))
+        .collect()
+}
+
+fn compact_tail_after<'a>(compact: &'a str, label: &str) -> Option<&'a str> {
+    let label_idx = compact.find(label)?;
+    let start = label_idx + label.len();
+    let boundaries = [
+        "currentsession",
+        "currentweekallmodels",
+        "currentweeksonnetonly",
+        "currentweeksonnet",
+        "sonnetonly",
+        "whatscontributing",
+        "usagecredits",
+    ];
+    let end = boundaries
+        .iter()
+        .filter_map(|boundary| {
+            compact[start..]
+                .find(boundary)
+                .map(|idx| start + idx)
+                .filter(|idx| *idx > start)
+        })
+        .min()
+        .unwrap_or(compact.len());
+    Some(&compact[start..end])
+}
+
 fn percent_from_line(line: &str) -> Option<f64> {
     let lower = line.to_lowercase();
     if lower.contains('|')
@@ -380,6 +509,61 @@ fn extract_reset_after(
             }
         }
     }
+    None
+}
+
+fn extract_reset_after_compact(label: &str, panel: &str) -> Option<DateTime<Utc>> {
+    let compact = compact_usage_text(panel);
+    let tail = compact_tail_after(&compact, label)?;
+
+    static MONTH_DAY: OnceLock<Regex> = OnceLock::new();
+    let month_day = MONTH_DAY.get_or_init(|| {
+        Regex::new(
+            r"(?:resets?|reses)(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(\d{1,2}),?(\d{1,2})(?::(\d{2}))?(am|pm)",
+        )
+        .unwrap()
+    });
+    if let Some(caps) = month_day.captures(tail) {
+        let month = month_from_text(caps.get(1)?.as_str())?;
+        let day = caps.get(2)?.as_str().parse::<u32>().ok()?;
+        let hour_raw = caps.get(3)?.as_str().parse::<u32>().ok()?;
+        let minute = caps
+            .get(4)
+            .and_then(|m| m.as_str().parse::<u32>().ok())
+            .unwrap_or(0);
+        return local_month_day_time_to_utc(month, day, hour_raw, minute, caps.get(5)?.as_str());
+    }
+
+    static WEEKDAY: OnceLock<Regex> = OnceLock::new();
+    let weekday = WEEKDAY.get_or_init(|| {
+        Regex::new(
+            r"(?:resets?|reses)(mon|tue|wed|thu|fri|sat|sun)[a-z]*(\d{1,2})(?::(\d{2}))?(am|pm)",
+        )
+        .unwrap()
+    });
+    if let Some(caps) = weekday.captures(tail) {
+        let line = format!(
+            "Resets {} {}:{} {}",
+            caps.get(1)?.as_str(),
+            caps.get(2)?.as_str(),
+            caps.get(3).map(|m| m.as_str()).unwrap_or("00"),
+            caps.get(4)?.as_str()
+        );
+        return parse_weekday_reset(&line);
+    }
+
+    static TIME_ONLY: OnceLock<Regex> = OnceLock::new();
+    let time_only = TIME_ONLY
+        .get_or_init(|| Regex::new(r"(?:resets?|reses)(\d{1,2})(?::(\d{2}))?(am|pm)").unwrap());
+    if let Some(caps) = time_only.captures(tail) {
+        let hour_raw = caps.get(1)?.as_str().parse::<u32>().ok()?;
+        let minute = caps
+            .get(2)
+            .and_then(|m| m.as_str().parse::<u32>().ok())
+            .unwrap_or(0);
+        return local_time_to_next_utc(hour_raw, minute, caps.get(3)?.as_str());
+    }
+
     None
 }
 
@@ -466,6 +650,72 @@ fn parse_weekday_reset(line: &str) -> Option<DateTime<Utc>> {
     Some(candidate.with_timezone(&Utc))
 }
 
+fn local_month_day_time_to_utc(
+    month: u32,
+    day: u32,
+    hour_raw: u32,
+    minute: u32,
+    meridiem: &str,
+) -> Option<DateTime<Utc>> {
+    let hour = hour_from_meridiem(hour_raw, meridiem)?;
+    let time = NaiveTime::from_hms_opt(hour, minute, 0)?;
+    let now = Local::now();
+    let mut year = now.year();
+    let mut date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
+    let mut candidate = Local.from_local_datetime(&date.and_time(time)).single()?;
+    if candidate <= now {
+        year += 1;
+        date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
+        candidate = Local.from_local_datetime(&date.and_time(time)).single()?;
+    }
+    Some(candidate.with_timezone(&Utc))
+}
+
+fn local_time_to_next_utc(hour_raw: u32, minute: u32, meridiem: &str) -> Option<DateTime<Utc>> {
+    let hour = hour_from_meridiem(hour_raw, meridiem)?;
+    let time = NaiveTime::from_hms_opt(hour, minute, 0)?;
+    let now = Local::now();
+    let today = now.date_naive();
+    let mut candidate = Local.from_local_datetime(&today.and_time(time)).single()?;
+    if candidate <= now {
+        candidate = Local
+            .from_local_datetime(&(today + Duration::days(1)).and_time(time))
+            .single()?;
+    }
+    Some(candidate.with_timezone(&Utc))
+}
+
+fn hour_from_meridiem(hour_raw: u32, meridiem: &str) -> Option<u32> {
+    if hour_raw == 0 || hour_raw > 12 {
+        return None;
+    }
+    match meridiem {
+        "am" if hour_raw == 12 => Some(0),
+        "am" => Some(hour_raw),
+        "pm" if hour_raw == 12 => Some(12),
+        "pm" => Some(hour_raw + 12),
+        _ => None,
+    }
+}
+
+fn month_from_text(text: &str) -> Option<u32> {
+    match &text.to_ascii_lowercase()[..3.min(text.len())] {
+        "jan" => Some(1),
+        "feb" => Some(2),
+        "mar" => Some(3),
+        "apr" => Some(4),
+        "may" => Some(5),
+        "jun" => Some(6),
+        "jul" => Some(7),
+        "aug" => Some(8),
+        "sep" => Some(9),
+        "oct" => Some(10),
+        "nov" => Some(11),
+        "dec" => Some(12),
+        _ => None,
+    }
+}
+
 fn weekday_from_text(text: &str) -> Option<Weekday> {
     match &text.to_ascii_lowercase()[..3.min(text.len())] {
         "mon" => Some(Weekday::Mon),
@@ -544,6 +794,20 @@ mod tests {
         assert_eq!(limits.five_hour_percent, 12.0);
         assert_eq!(limits.weekly_percent, 22.0);
         assert_eq!(limits.sub_quotas[0].utilization, 0.0);
+    }
+
+    #[test]
+    fn parses_compact_tui_capture_without_reusing_session_percent() {
+        let limits = parse_cli_usage_limits(include_str!(
+            "../../tests/fixtures/claude_usage/compact_tui_capture.txt"
+        ))
+        .unwrap();
+
+        assert_eq!(limits.five_hour_percent, 14.0);
+        assert_eq!(limits.weekly_percent, 38.0);
+        assert_eq!(limits.sub_quotas[0].utilization, 0.0);
+        assert!(limits.five_hour_resets_at.is_some());
+        assert!(limits.weekly_resets_at.is_some());
     }
 
     #[test]
