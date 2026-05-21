@@ -167,12 +167,14 @@ function render(snap) {
 
   const showClaude = snap.claude_available && !!c;
   const showCodex  = snap.codex_available  && !!x;
+  const singleAgent = showClaude !== showCodex;
+  document.body.classList.toggle("single-agent", singleAgent);
   if (claudeRow)  claudeRow.style.display  = showClaude ? "" : "none";
   if (codexRow)   codexRow.style.display   = showCodex  ? "" : "none";
   if (claudeCard) claudeCard.style.display = showClaude ? "" : "none";
   if (codexCard)  codexCard.style.display  = showCodex  ? "" : "none";
   if (cards) {
-    cards.classList.toggle("solo", showClaude !== showCodex);
+    cards.classList.toggle("solo", singleAgent);
     cards.style.display = (showClaude || showCodex) ? "" : "none";
   }
   if (empty) {
@@ -289,6 +291,12 @@ async function refresh() {
 // Auto-fit HEIGHT to content. Width stays at the canonical state width so
 // a mid-transition measurement can't lock the window narrow.
 const WIDTH_BY_STATE = { collapsed: 272, expanded: 640, compact: 640, settings: 640 };
+const SOLO_WIDTH_BY_STATE = { expanded: 520, compact: 520 };
+function widthForState(stateKey) {
+  return document.body.classList.contains("single-agent")
+    ? (SOLO_WIDTH_BY_STATE[stateKey] || WIDTH_BY_STATE[stateKey])
+    : WIDTH_BY_STATE[stateKey];
+}
 async function fitWindowToContent() {
   let target, stateKey;
   if (document.body.classList.contains("state-expanded")) {
@@ -304,7 +312,7 @@ async function fitWindowToContent() {
   void target.offsetHeight; // force layout
   const h = Math.ceil(target.getBoundingClientRect().height);
   if (h < 50) return;
-  try { await invoke("set_window_size", { width: WIDTH_BY_STATE[stateKey], height: h }); } catch (e) {}
+  try { await invoke("set_window_size", { width: widthForState(stateKey), height: h }); } catch (e) {}
 }
 
 // ── State toggle

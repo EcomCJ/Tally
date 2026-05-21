@@ -365,8 +365,16 @@ body.state-collapsed #btnCompact {
 }
 /* Solo mode: one vendor only — center it with a generous max width */
 .brand-cards.solo {
-  grid-template-columns: minmax(0, 420px);
+  grid-template-columns: minmax(0, 1fr);
   justify-content: center;
+}
+body.single-agent .brand-cards,
+body.single-agent .roi,
+body.single-agent .data-view {
+  width: 100%;
+  max-width: 492px;
+  margin-left: auto;
+  margin-right: auto;
 }
 /* Empty state when neither vendor is connected */
 .empty-state {
