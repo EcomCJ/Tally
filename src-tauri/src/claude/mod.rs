@@ -10,7 +10,7 @@ mod roots;
 mod types;
 mod web;
 
-pub use types::{ClaudeLimitSource, ClaudeLiveLimits, ClaudeStats, SubQuota};
+pub use types::{ClaudeLimitSource, ClaudeLiveLimits, ClaudeStats, PeriodStats, SubQuota};
 
 pub fn fetch_plan_tier() -> Result<String> {
     oauth::fetch_plan_tier()

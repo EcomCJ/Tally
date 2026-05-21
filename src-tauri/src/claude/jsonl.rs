@@ -1,6 +1,7 @@
 use anyhow::Result;
-use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Utc};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use walkdir::WalkDir;
@@ -42,6 +43,7 @@ struct ClaudeUsage {
 
 pub(crate) fn collect_token_stats() -> Result<ClaudeStats> {
     let mut stats = ClaudeStats::default();
+    let mut daily_rows: BTreeMap<NaiveDate, crate::history::DailyUsage> = BTreeMap::new();
     let mut projects_dir = match dirs::home_dir() {
         Some(d) => d,
         None => return Ok(stats),
@@ -160,6 +162,15 @@ pub(crate) fn collect_token_stats() -> Result<ClaudeStats> {
                 usage.cache_read_input_tokens,
                 usage.cache_creation_input_tokens,
             );
+            let local_ts: DateTime<Local> = ts.into();
+            let daily = daily_rows.entry(local_ts.date_naive()).or_default();
+            daily.tokens.input += usage.input_tokens;
+            daily.tokens.output += usage.output_tokens;
+            daily.tokens.cache_read += usage.cache_read_input_tokens;
+            daily.tokens.cache_write += usage.cache_creation_input_tokens;
+            daily.requests += 1;
+            daily.api_equiv += msg_cost;
+
             let accrue = |p: &mut PeriodStats| {
                 add(&mut p.tokens, &usage);
                 p.requests += 1;
@@ -205,6 +216,10 @@ pub(crate) fn collect_token_stats() -> Result<ClaudeStats> {
     if !all_message_times.is_empty() {
         all_message_times.sort();
         stats.last_event_at = Some(*all_message_times.last().unwrap());
+    }
+
+    if let Err(e) = crate::history::upsert_daily_usage("claude", &daily_rows) {
+        eprintln!("[tally] claude daily history backfill failed: {e}");
     }
 
     Ok(stats)

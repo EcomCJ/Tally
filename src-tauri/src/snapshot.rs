@@ -94,8 +94,16 @@ pub fn build(refresh_ms: u64) -> Result<UsageSnapshot> {
     let claude_available = claude::is_available();
     let codex_available = codex::is_available();
 
-    let claude_stats = if claude_available { claude::collect(refresh_ms)? } else { claude::ClaudeStats::default() };
-    let codex_stats  = if codex_available  { codex::collect()?  } else { codex::CodexStats::default() };
+    let claude_stats = if claude_available {
+        claude::collect(refresh_ms)?
+    } else {
+        claude::ClaudeStats::default()
+    };
+    let codex_stats = if codex_available {
+        codex::collect()?
+    } else {
+        codex::CodexStats::default()
+    };
 
     // Auto-detect plans from API. Fall back to sensible defaults if calls fail.
     let claude_plan = if claude_available {
@@ -103,29 +111,47 @@ pub fn build(refresh_ms: u64) -> Result<UsageSnapshot> {
             .map(|tier| plans::claude_plan(&tier))
             .unwrap_or_else(|_| plans::claude_plan("default_claude_max_5x"))
     } else {
-        plans::PlanInfo { label: String::new(), monthly_cost: 0.0 }
+        plans::PlanInfo {
+            label: String::new(),
+            monthly_cost: 0.0,
+        }
     };
     let codex_plan = if codex_available {
-        plans::codex_plan(
-            if codex_stats.plan_label_raw.is_empty() {
-                "prolite"
-            } else {
-                &codex_stats.plan_label_raw
-            }
-        )
+        plans::codex_plan(if codex_stats.plan_label_raw.is_empty() {
+            "prolite"
+        } else {
+            &codex_stats.plan_label_raw
+        })
     } else {
-        plans::PlanInfo { label: String::new(), monthly_cost: 0.0 }
+        plans::PlanInfo {
+            label: String::new(),
+            monthly_cost: 0.0,
+        }
     };
 
     // Per-model accurate costs — accumulated during JSONL walk using each
     // message/session's actual model rate, not a blended fallback.
-    let claude_today_cost = claude_stats.today.cost;
-    let claude_mtd_cost   = claude_stats.mtd.cost;
-    let codex_today_cost  = codex_stats.today.cost;
-    let codex_mtd_cost    = codex_stats.mtd.cost;
+    let now = Utc::now();
+    let history_periods = crate::history::load_daily_periods(now).unwrap_or_else(|e| {
+        eprintln!("[tally] daily history rollup failed: {e}");
+        std::collections::HashMap::new()
+    });
+    let claude_history = history_periods.get("claude");
+    let codex_history = history_periods.get("codex");
 
-    let today_api_equiv = claude_today_cost + codex_today_cost;
-    let mtd_api_equiv = claude_mtd_cost + codex_mtd_cost;
+    let period_cost = |key: &str| -> f64 {
+        let c = claude_history
+            .and_then(|h| h.get(key))
+            .map(|u| u.api_equiv)
+            .unwrap_or_else(|| claude_stats_period_cost(&claude_stats, key));
+        let x = codex_history
+            .and_then(|h| h.get(key))
+            .map(|u| u.api_equiv)
+            .unwrap_or_else(|| codex_stats_period_cost(&codex_stats, key));
+        c + x
+    };
+    let today_api_equiv = period_cost("today");
+    let mtd_api_equiv = period_cost("mtd");
     // Subscriptions sourced from auto-detected plans, not hardcoded.
     let subscriptions = claude_plan.monthly_cost + codex_plan.monthly_cost;
     let leverage = if subscriptions > 0.0 {
@@ -135,30 +161,22 @@ pub fn build(refresh_ms: u64) -> Result<UsageSnapshot> {
     };
     let saved_mtd = (mtd_api_equiv - subscriptions).max(0.0);
 
-    let now = Utc::now();
-
     // Build per-period views for both brands.
     let claude_periods = {
         let mut m = std::collections::HashMap::new();
         for (key, p) in [
             ("today", &claude_stats.today),
-            ("1d",    &claude_stats.d1),
-            ("7d",    &claude_stats.d7),
-            ("14d",   &claude_stats.d14),
-            ("30d",   &claude_stats.d30),
-            ("mtd",   &claude_stats.mtd),
+            ("1d", &claude_stats.d1),
+            ("7d", &claude_stats.d7),
+            ("14d", &claude_stats.d14),
+            ("30d", &claude_stats.d30),
+            ("mtd", &claude_stats.mtd),
         ] {
-            m.insert(key.to_string(), PeriodView {
-                tokens: TokenBreakdown {
-                    input: p.tokens.input,
-                    output: p.tokens.output,
-                    cache_read: p.tokens.cache_read,
-                    cache_write: p.tokens.cache_write,
-                    ..Default::default()
-                },
-                requests: p.requests,
-                api_equiv: p.cost,
-            });
+            let view = claude_history
+                .and_then(|h| h.get(key))
+                .map(claude_period_view_from_history)
+                .unwrap_or_else(|| claude_period_view_from_stats(p));
+            m.insert(key.to_string(), view);
         }
         m
     };
@@ -166,111 +184,126 @@ pub fn build(refresh_ms: u64) -> Result<UsageSnapshot> {
         let mut m = std::collections::HashMap::new();
         for (key, p) in [
             ("today", &codex_stats.today),
-            ("1d",    &codex_stats.d1),
-            ("7d",    &codex_stats.d7),
-            ("14d",   &codex_stats.d14),
-            ("30d",   &codex_stats.d30),
-            ("mtd",   &codex_stats.mtd),
+            ("1d", &codex_stats.d1),
+            ("7d", &codex_stats.d7),
+            ("14d", &codex_stats.d14),
+            ("30d", &codex_stats.d30),
+            ("mtd", &codex_stats.mtd),
         ] {
-            m.insert(key.to_string(), PeriodView {
-                tokens: TokenBreakdown {
-                    input: p.tokens.input,
-                    cached_input: p.tokens.cached_input,
-                    output: p.tokens.output,
-                    reasoning: p.tokens.reasoning,
-                    ..Default::default()
-                },
-                requests: p.requests,
-                api_equiv: p.cost,
-            });
+            let view = codex_history
+                .and_then(|h| h.get(key))
+                .map(codex_period_view_from_history)
+                .unwrap_or_else(|| codex_period_view_from_stats(p));
+            m.insert(key.to_string(), view);
         }
         m
     };
 
-    let claude_snap = if claude_available { Some(BrandSnapshot {
-        name: "Claude Code".to_string(),
-        tier: claude_plan.label.clone(),
-        color: "#D97757".to_string(),
-        data_source: claude_stats.limit_source.map(|s| s.label().to_string()),
-        data_updated_at: claude_stats.limit_fetched_at,
-        five_hour: build_window(
-            claude_stats.five_hour_percent,
-            claude_stats.next_5h_reset,
-            short_time,
-        ),
-        weekly: build_window(
-            claude_stats.weekly_percent,
-            claude_stats.next_weekly_reset,
-            short_date_time,
-        ),
-        periods: claude_periods,
-        last_event_at: claude_stats.last_event_at,
-        sub_quotas: {
-            let mut views: Vec<SubQuotaView> = claude_stats.sub_quotas.iter().map(|q| {
-                let label_lc = q.label.to_lowercase();
-                let cost = if label_lc.contains("cowork") {
-                    claude_stats.cowork_cost_7d
-                } else {
-                    claude_stats.cost_by_entrypoint_7d.iter()
-                        .filter(|(ep, _)| ep.to_lowercase().contains(&label_lc))
-                        .map(|(_, c)| *c).sum::<f64>()
-                };
-                SubQuotaView {
-                    label: q.label.clone(),
-                    used_percent: q.utilization,
-                    resets_at: q.resets_at,
-                    cost_7d: cost,
+    let claude_snap = if claude_available {
+        Some(BrandSnapshot {
+            name: "Claude Code".to_string(),
+            tier: claude_plan.label.clone(),
+            color: "#D97757".to_string(),
+            data_source: claude_stats.limit_source.map(|s| s.label().to_string()),
+            data_updated_at: claude_stats.limit_fetched_at,
+            five_hour: build_window(
+                claude_stats.five_hour_percent,
+                claude_stats.next_5h_reset,
+                short_time,
+            ),
+            weekly: build_window(
+                claude_stats.weekly_percent,
+                claude_stats.next_weekly_reset,
+                short_date_time,
+            ),
+            periods: claude_periods,
+            last_event_at: claude_stats.last_event_at,
+            sub_quotas: {
+                let mut views: Vec<SubQuotaView> = claude_stats
+                    .sub_quotas
+                    .iter()
+                    .map(|q| {
+                        let label_lc = q.label.to_lowercase();
+                        let cost = if label_lc.contains("cowork") {
+                            claude_stats.cowork_cost_7d
+                        } else {
+                            claude_stats
+                                .cost_by_entrypoint_7d
+                                .iter()
+                                .filter(|(ep, _)| ep.to_lowercase().contains(&label_lc))
+                                .map(|(_, c)| *c)
+                                .sum::<f64>()
+                        };
+                        SubQuotaView {
+                            label: q.label.clone(),
+                            used_percent: q.utilization,
+                            resets_at: q.resets_at,
+                            cost_7d: cost,
+                        }
+                    })
+                    .collect();
+                // Synthesize a Cowork row if we have local Cowork session $ but the
+                // API returned null for seven_day_cowork (older usage outside the 7d
+                // window, or API didn't include it). Use 0% utilization in that case.
+                let has_cowork_row = views.iter().any(|v| v.label.eq_ignore_ascii_case("cowork"));
+                if !has_cowork_row && claude_stats.cowork_cost_7d > 0.0 {
+                    views.push(SubQuotaView {
+                        label: "Cowork".to_string(),
+                        used_percent: 0.0,
+                        resets_at: None,
+                        cost_7d: claude_stats.cowork_cost_7d,
+                    });
                 }
-            }).collect();
-            // Synthesize a Cowork row if we have local Cowork session $ but the
-            // API returned null for seven_day_cowork (older usage outside the 7d
-            // window, or API didn't include it). Use 0% utilization in that case.
-            let has_cowork_row = views.iter().any(|v| v.label.eq_ignore_ascii_case("cowork"));
-            if !has_cowork_row && claude_stats.cowork_cost_7d > 0.0 {
-                views.push(SubQuotaView {
-                    label: "Cowork".to_string(),
-                    used_percent: 0.0,
-                    resets_at: None,
-                    cost_7d: claude_stats.cowork_cost_7d,
-                });
-            }
-            views
-        },
-        extra_usage: claude_stats.extra_usage.as_ref().map(|e| ExtraUsageView {
-            enabled: e.enabled,
-            used: e.used,
-            limit: e.limit,
-            used_percent: e.utilization,
-            currency: e.currency.clone(),
-        }),
-    }) } else { None };
+                views
+            },
+            extra_usage: claude_stats.extra_usage.as_ref().map(|e| ExtraUsageView {
+                enabled: e.enabled,
+                used: e.used,
+                limit: e.limit,
+                used_percent: e.utilization,
+                currency: e.currency.clone(),
+            }),
+        })
+    } else {
+        None
+    };
 
-    let codex_snap = if codex_available { Some(BrandSnapshot {
-        name: "Codex".to_string(),
-        tier: codex_plan.label.clone(),
-        color: "#10A37F".to_string(),
-        data_source: None,
-        data_updated_at: None,
-        five_hour: build_window(
-            codex_stats.rate_limits.primary_used_percent,
-            codex_stats.rate_limits.primary_resets_at,
-            short_time,
-        ),
-        weekly: build_window(
-            codex_stats.rate_limits.secondary_used_percent,
-            codex_stats.rate_limits.secondary_resets_at,
-            short_date_time,
-        ),
-        periods: codex_periods,
-        last_event_at: codex_stats.last_event_at,
-        sub_quotas: Vec::new(),
-        extra_usage: None,
-    }) } else { None };
+    let codex_snap = if codex_available {
+        Some(BrandSnapshot {
+            name: "Codex".to_string(),
+            tier: codex_plan.label.clone(),
+            color: "#10A37F".to_string(),
+            data_source: None,
+            data_updated_at: None,
+            five_hour: build_window(
+                codex_stats.rate_limits.primary_used_percent,
+                codex_stats.rate_limits.primary_resets_at,
+                short_time,
+            ),
+            weekly: build_window(
+                codex_stats.rate_limits.secondary_used_percent,
+                codex_stats.rate_limits.secondary_resets_at,
+                short_date_time,
+            ),
+            periods: codex_periods,
+            last_event_at: codex_stats.last_event_at,
+            sub_quotas: Vec::new(),
+            extra_usage: None,
+        })
+    } else {
+        None
+    };
 
     // Combined api equivalents per period (Claude + Codex)
     let combined_period = |key: &str| -> f64 {
-        let c = claude_stats_period_cost(&claude_stats, key);
-        let x = codex_stats_period_cost(&codex_stats, key);
+        let c = claude_history
+            .and_then(|h| h.get(key))
+            .map(|u| u.api_equiv)
+            .unwrap_or_else(|| claude_stats_period_cost(&claude_stats, key));
+        let x = codex_history
+            .and_then(|h| h.get(key))
+            .map(|u| u.api_equiv)
+            .unwrap_or_else(|| codex_stats_period_cost(&codex_stats, key));
         c + x
     };
     let mut period_api_equiv = std::collections::HashMap::new();
@@ -303,23 +336,79 @@ pub fn build(refresh_ms: u64) -> Result<UsageSnapshot> {
 fn claude_stats_period_cost(s: &claude::ClaudeStats, key: &str) -> f64 {
     match key {
         "today" => s.today.cost,
-        "1d"    => s.d1.cost,
-        "7d"    => s.d7.cost,
-        "14d"   => s.d14.cost,
-        "30d"   => s.d30.cost,
-        "mtd"   => s.mtd.cost,
+        "1d" => s.d1.cost,
+        "7d" => s.d7.cost,
+        "14d" => s.d14.cost,
+        "30d" => s.d30.cost,
+        "mtd" => s.mtd.cost,
         _ => 0.0,
+    }
+}
+
+fn claude_period_view_from_stats(p: &claude::PeriodStats) -> PeriodView {
+    PeriodView {
+        tokens: TokenBreakdown {
+            input: p.tokens.input,
+            output: p.tokens.output,
+            cache_read: p.tokens.cache_read,
+            cache_write: p.tokens.cache_write,
+            ..Default::default()
+        },
+        requests: p.requests,
+        api_equiv: p.cost,
+    }
+}
+
+fn codex_period_view_from_stats(p: &codex::CodexPeriodStats) -> PeriodView {
+    PeriodView {
+        tokens: TokenBreakdown {
+            input: p.tokens.input,
+            cached_input: p.tokens.cached_input,
+            output: p.tokens.output,
+            reasoning: p.tokens.reasoning,
+            ..Default::default()
+        },
+        requests: p.requests,
+        api_equiv: p.cost,
+    }
+}
+
+fn claude_period_view_from_history(p: &crate::history::DailyUsage) -> PeriodView {
+    PeriodView {
+        tokens: TokenBreakdown {
+            input: p.tokens.input,
+            output: p.tokens.output,
+            cache_read: p.tokens.cache_read,
+            cache_write: p.tokens.cache_write,
+            ..Default::default()
+        },
+        requests: p.requests,
+        api_equiv: p.api_equiv,
+    }
+}
+
+fn codex_period_view_from_history(p: &crate::history::DailyUsage) -> PeriodView {
+    PeriodView {
+        tokens: TokenBreakdown {
+            input: p.tokens.input,
+            cached_input: p.tokens.cached_input,
+            output: p.tokens.output,
+            reasoning: p.tokens.reasoning,
+            ..Default::default()
+        },
+        requests: p.requests,
+        api_equiv: p.api_equiv,
     }
 }
 
 fn codex_stats_period_cost(s: &codex::CodexStats, key: &str) -> f64 {
     match key {
         "today" => s.today.cost,
-        "1d"    => s.d1.cost,
-        "7d"    => s.d7.cost,
-        "14d"   => s.d14.cost,
-        "30d"   => s.d30.cost,
-        "mtd"   => s.mtd.cost,
+        "1d" => s.d1.cost,
+        "7d" => s.d7.cost,
+        "14d" => s.d14.cost,
+        "30d" => s.d30.cost,
+        "mtd" => s.mtd.cost,
         _ => 0.0,
     }
 }

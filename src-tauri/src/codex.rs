@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Utc};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -165,14 +165,16 @@ fn codex_auth_path() -> Option<PathBuf> {
 fn read_codex_auth_file() -> Result<(PathBuf, CodexAuthFile)> {
     let path = codex_auth_path().ok_or_else(|| anyhow!("no codex home dir"))?;
     let file = File::open(&path).map_err(|e| anyhow!("read {}: {e}", path.display()))?;
-    let auth: CodexAuthFile = serde_json::from_reader(file)
-        .map_err(|e| anyhow!("parse {}: {e}", path.display()))?;
+    let auth: CodexAuthFile =
+        serde_json::from_reader(file).map_err(|e| anyhow!("parse {}: {e}", path.display()))?;
     Ok((path, auth))
 }
 
 fn read_codex_auth() -> Result<CodexAuthTokens> {
     let (path, auth) = read_codex_auth_file()?;
-    let tokens = auth.tokens.ok_or_else(|| anyhow!("codex auth missing tokens"))?;
+    let tokens = auth
+        .tokens
+        .ok_or_else(|| anyhow!("codex auth missing tokens"))?;
     let stale = auth
         .last_refresh
         .map(|ts| Utc::now().signed_duration_since(ts) > Duration::days(8))
@@ -187,7 +189,10 @@ fn read_codex_auth() -> Result<CodexAuthTokens> {
     Ok(tokens)
 }
 
-fn refresh_codex_auth(path: &std::path::Path, current: &CodexAuthTokens) -> Result<CodexAuthTokens> {
+fn refresh_codex_auth(
+    path: &std::path::Path,
+    current: &CodexAuthTokens,
+) -> Result<CodexAuthTokens> {
     let refresh_token = current
         .refresh_token
         .as_deref()
@@ -224,16 +229,28 @@ fn save_codex_auth_tokens(path: &std::path::Path, tokens: &CodexAuthTokens) -> R
     }
     let mut token_obj = serde_json::Map::new();
     if let Some(value) = tokens.access_token.as_ref() {
-        token_obj.insert("access_token".to_string(), serde_json::Value::String(value.clone()));
+        token_obj.insert(
+            "access_token".to_string(),
+            serde_json::Value::String(value.clone()),
+        );
     }
     if let Some(value) = tokens.refresh_token.as_ref() {
-        token_obj.insert("refresh_token".to_string(), serde_json::Value::String(value.clone()));
+        token_obj.insert(
+            "refresh_token".to_string(),
+            serde_json::Value::String(value.clone()),
+        );
     }
     if let Some(value) = tokens.id_token.as_ref() {
-        token_obj.insert("id_token".to_string(), serde_json::Value::String(value.clone()));
+        token_obj.insert(
+            "id_token".to_string(),
+            serde_json::Value::String(value.clone()),
+        );
     }
     if let Some(value) = tokens.account_id.as_ref() {
-        token_obj.insert("account_id".to_string(), serde_json::Value::String(value.clone()));
+        token_obj.insert(
+            "account_id".to_string(),
+            serde_json::Value::String(value.clone()),
+        );
     }
     json["tokens"] = serde_json::Value::Object(token_obj);
     json["last_refresh"] = serde_json::Value::String(Utc::now().to_rfc3339());
@@ -316,20 +333,32 @@ fn fetch_oauth_rate_limits() -> Result<(CodexRateLimits, String, String, DateTim
         .map_err(|e| anyhow!("decode chatgpt wham usage: {e}"))?;
 
     let mut rl = CodexRateLimits::default();
-    if let Some(primary) = body.rate_limit.as_ref().and_then(|r| r.primary_window.as_ref()) {
+    if let Some(primary) = body
+        .rate_limit
+        .as_ref()
+        .and_then(|r| r.primary_window.as_ref())
+    {
         rl.primary_used_percent = primary.used_percent as f64;
         rl.primary_resets_at = primary
             .reset_at
             .and_then(|ts| Utc.timestamp_opt(ts, 0).single());
     }
-    if let Some(secondary) = body.rate_limit.as_ref().and_then(|r| r.secondary_window.as_ref()) {
+    if let Some(secondary) = body
+        .rate_limit
+        .as_ref()
+        .and_then(|r| r.secondary_window.as_ref())
+    {
         rl.secondary_used_percent = secondary.used_percent as f64;
         rl.secondary_resets_at = secondary
             .reset_at
             .and_then(|ts| Utc.timestamp_opt(ts, 0).single());
     }
     let raw = body.plan_type.unwrap_or_default();
-    let label = plan_label(if raw.is_empty() { None } else { Some(raw.as_str()) });
+    let label = plan_label(if raw.is_empty() {
+        None
+    } else {
+        Some(raw.as_str())
+    });
     Ok((rl, label, raw, Utc::now()))
 }
 
@@ -446,15 +475,11 @@ fn fetch_rpc_rate_limits() -> Result<(CodexRateLimits, String, String, DateTime<
     let mut rl = CodexRateLimits::default();
     if let Some(p) = payload.primary {
         rl.primary_used_percent = p.used_percent as f64;
-        rl.primary_resets_at = p
-            .resets_at
-            .and_then(|ts| Utc.timestamp_opt(ts, 0).single());
+        rl.primary_resets_at = p.resets_at.and_then(|ts| Utc.timestamp_opt(ts, 0).single());
     }
     if let Some(s) = payload.secondary {
         rl.secondary_used_percent = s.used_percent as f64;
-        rl.secondary_resets_at = s
-            .resets_at
-            .and_then(|ts| Utc.timestamp_opt(ts, 0).single());
+        rl.secondary_resets_at = s.resets_at.and_then(|ts| Utc.timestamp_opt(ts, 0).single());
     }
     let plan_type_raw = payload.plan_type.clone().unwrap_or_default();
     let plan_label = match payload.plan_type.as_deref() {
@@ -544,13 +569,11 @@ pub fn collect() -> Result<CodexStats> {
     let now = Utc::now();
     let cutoff_30d = now - Duration::days(30);
     let cutoff_14d = now - Duration::days(14);
-    let cutoff_7d  = now - Duration::days(7);
-    let cutoff_1d  = now - Duration::days(1);
+    let cutoff_7d = now - Duration::days(7);
+    let cutoff_1d = now - Duration::days(1);
     let now_local = Local::now();
     let today_start = Local
-        .from_local_datetime(
-            &now_local.date_naive().and_hms_opt(0, 0, 0).unwrap(),
-        )
+        .from_local_datetime(&now_local.date_naive().and_hms_opt(0, 0, 0).unwrap())
         .single()
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or(now);
@@ -581,7 +604,11 @@ pub fn collect() -> Result<CodexStats> {
         return Ok(stats);
     }
 
-    for entry in roots.iter().flat_map(|r| WalkDir::new(r).into_iter()).filter_map(|e| e.ok()) {
+    for entry in roots
+        .iter()
+        .flat_map(|r| WalkDir::new(r).into_iter())
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path().to_path_buf();
         if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
             continue;
@@ -629,7 +656,10 @@ pub fn collect() -> Result<CodexStats> {
             // first event in a session always has info=null.
             if let Some(info) = payload.info {
                 if let Some(delta) = info.last_token_usage {
-                    if delta.input_tokens > 0 || delta.output_tokens > 0 || delta.reasoning_output_tokens > 0 {
+                    if delta.input_tokens > 0
+                        || delta.output_tokens > 0
+                        || delta.reasoning_output_tokens > 0
+                    {
                         events.push((ts, path.clone(), delta));
                     }
                 }
@@ -640,6 +670,7 @@ pub fn collect() -> Result<CodexStats> {
     // Each event = one turn. Attribute its delta tokens + cost to the
     // buckets matching the event's own timestamp.
     let empty = String::new();
+    let mut daily_rows: BTreeMap<NaiveDate, crate::history::DailyUsage> = BTreeMap::new();
     for (ts, path, delta) in &events {
         let model = session_model.get(path).unwrap_or(&empty);
         let cost = crate::pricing::codex_turn_cost(
@@ -649,6 +680,15 @@ pub fn collect() -> Result<CodexStats> {
             delta.output_tokens,
             delta.reasoning_output_tokens,
         );
+        let local_ts: DateTime<Local> = (*ts).into();
+        let daily = daily_rows.entry(local_ts.date_naive()).or_default();
+        daily.tokens.input += delta.input_tokens;
+        daily.tokens.cached_input += delta.cached_input_tokens;
+        daily.tokens.output += delta.output_tokens;
+        daily.tokens.reasoning += delta.reasoning_output_tokens;
+        daily.requests += 1;
+        daily.api_equiv += cost;
+
         let accrue = |p: &mut CodexPeriodStats| {
             p.tokens.input += delta.input_tokens;
             p.tokens.cached_input += delta.cached_input_tokens;
@@ -657,12 +697,28 @@ pub fn collect() -> Result<CodexStats> {
             p.cost += cost;
             p.requests += 1;
         };
-        if *ts >= today_start { accrue(&mut stats.today); }
-        if *ts >= cutoff_1d   { accrue(&mut stats.d1); }
-        if *ts >= cutoff_7d   { accrue(&mut stats.d7); }
-        if *ts >= cutoff_14d  { accrue(&mut stats.d14); }
-        if *ts >= cutoff_30d  { accrue(&mut stats.d30); }
-        if *ts >= mtd_start   { accrue(&mut stats.mtd); }
+        if *ts >= today_start {
+            accrue(&mut stats.today);
+        }
+        if *ts >= cutoff_1d {
+            accrue(&mut stats.d1);
+        }
+        if *ts >= cutoff_7d {
+            accrue(&mut stats.d7);
+        }
+        if *ts >= cutoff_14d {
+            accrue(&mut stats.d14);
+        }
+        if *ts >= cutoff_30d {
+            accrue(&mut stats.d30);
+        }
+        if *ts >= mtd_start {
+            accrue(&mut stats.mtd);
+        }
+    }
+
+    if let Err(e) = crate::history::upsert_daily_usage("codex", &daily_rows) {
+        eprintln!("[tally] codex daily history backfill failed: {e}");
     }
 
     Ok(stats)
