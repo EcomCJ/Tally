@@ -1,0 +1,56 @@
+name: Release
+
+# Builds + publishes Tally installers (.msi + NSIS .exe) when a tag like
+# v0.1.36 is pushed. Runs on Microsoft's signed windows-latest runner so
+# Smart App Control / WDAC on dev machines doesn't block compilation.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Rust (MSVC stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: npm install
+        run: npm install
+
+      - name: Build + publish Tauri bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Tally ${{ github.ref_name }}'
+          releaseBody: |
+            Built automatically from tag ${{ github.ref_name }}.
+            Download the `.msi` or `.exe` installer below.
+
+            SmartScreen may warn on first run because the binary is not
+            code-signed. Choose "More info" → "Run anyway" if you trust the
+            release.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: false
