@@ -27,13 +27,24 @@ struct ShellState {
 /// interval — the backend cache TTL is tied to this so each UI poll gets
 /// data at most that old. Floor 30s to avoid hammering the API if a user
 /// picks an extreme value.
+/// Run on a worker thread via `spawn_blocking` so the JSONL walk (currently
+/// up to ~900+ files for heavy Claude/Codex users) and any HTTP calls never
+/// block the WebView UI thread. Prior sync version caused 5-30s freezes on
+/// fresh systems where NTFS cache was cold and Defender real-time scanning
+/// was hot — UI thread held captive during the walk meant Windows flagged
+/// the window "Not Responding" and dropped click/paint events.
 #[tauri::command]
-fn get_snapshot(refresh_ms: Option<u64>) -> Result<snapshot::UsageSnapshot, String> {
-    let snap = snapshot::build(refresh_ms.unwrap_or(120_000)).map_err(|e| e.to_string())?;
-    if let Err(e) = history::record_snapshot(&snap) {
-        eprintln!("[tally] usage history write failed: {e}");
-    }
-    Ok(snap)
+async fn get_snapshot(refresh_ms: Option<u64>) -> Result<snapshot::UsageSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let snap = snapshot::build(refresh_ms.unwrap_or(120_000))
+            .map_err(|e| e.to_string())?;
+        if let Err(e) = history::record_snapshot(&snap) {
+            eprintln!("[tally] usage history write failed: {e}");
+        }
+        Ok::<snapshot::UsageSnapshot, String>(snap)
+    })
+    .await
+    .map_err(|e| format!("get_snapshot worker join failed: {e}"))?
 }
 
 #[tauri::command]
@@ -196,11 +207,25 @@ pub fn run() {
             // Boot diagnostic — both sources should now be LIVE
             match snapshot::build(120_000) {
                 Ok(snap) => {
-                    let cl = snap.claude.as_ref()
-                        .map(|c| format!("5h={:.0}% wk={:.0}%", c.five_hour.used_percent, c.weekly.used_percent))
+                    let cl = snap
+                        .claude
+                        .as_ref()
+                        .map(|c| {
+                            format!(
+                                "5h={:.0}% wk={:.0}%",
+                                c.five_hour.used_percent, c.weekly.used_percent
+                            )
+                        })
                         .unwrap_or_else(|| "not connected".to_string());
-                    let cx = snap.codex.as_ref()
-                        .map(|c| format!("5h={:.0}% wk={:.0}%", c.five_hour.used_percent, c.weekly.used_percent))
+                    let cx = snap
+                        .codex
+                        .as_ref()
+                        .map(|c| {
+                            format!(
+                                "5h={:.0}% wk={:.0}%",
+                                c.five_hour.used_percent, c.weekly.used_percent
+                            )
+                        })
                         .unwrap_or_else(|| "not connected".to_string());
                     eprintln!(
                         "[tally] boot LIVE: claude({}) | codex({}) | roi={:.1}x",
