@@ -17,8 +17,10 @@ pub fn fetch_plan_tier() -> Result<String> {
 }
 
 /// True if at least one Claude source can plausibly run.
+/// Uses file-presence checks only — never hits the network — so a transient
+/// refresh-token / API failure doesn't hide the Claude card.
 pub fn is_available() -> bool {
-    oauth::read_oauth_token().is_ok() || cli::claude_cli_available()
+    oauth::has_credentials() || cli::claude_cli_available()
 }
 
 pub fn fetch_live_limits(refresh_ms: u64) -> Result<ClaudeLiveLimits> {

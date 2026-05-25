@@ -135,6 +135,20 @@ pub(crate) fn read_oauth_token() -> Result<String> {
     ensure_fresh_access_token()
 }
 
+/// Lightweight availability probe: does a parseable credentials file with an
+/// access token exist on disk? Does NOT hit the network — refresh logic lives
+/// in `read_oauth_token` / `ensure_fresh_access_token` and only runs when we
+/// actually need a token to call an API. Splitting these prevents the
+/// `is_available()` check from going dark whenever the refresh endpoint blips
+/// (429, network glitch, etc) — in that situation we still want the Claude
+/// card visible with stale-cache data, not hidden entirely.
+pub(crate) fn has_credentials() -> bool {
+    match read_credentials() {
+        Ok((_, creds)) => !creds.claude_ai_oauth.access_token.is_empty(),
+        Err(_) => false,
+    }
+}
+
 /// Fetch the user's Claude subscription tier identifier from /api/oauth/profile.
 /// Cached aggressively (24h) since it changes rarely.
 pub fn fetch_plan_tier() -> Result<String> {
