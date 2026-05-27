@@ -290,7 +290,7 @@ async function refresh() {
 
 // Auto-fit HEIGHT to content. Width stays at the canonical state width so
 // a mid-transition measurement can't lock the window narrow.
-const WIDTH_BY_STATE = { collapsed: 272, expanded: 640, compact: 640, settings: 640 };
+const WIDTH_BY_STATE = { collapsed: 272, expanded: 680, compact: 640, settings: 720 };
 const SOLO_WIDTH_BY_STATE = { expanded: 520, compact: 520 };
 function widthForState(stateKey) {
   return document.body.classList.contains("single-agent")
@@ -338,7 +338,7 @@ async function collapse() {
 async function showSettings() {
   document.body.classList.remove("state-collapsed", "state-expanded", "state-compact");
   document.body.classList.add("state-settings");
-  try { await invoke("resize_window", { expanded: true }); } catch (e) {}
+  try { await invoke("set_window_size", { width: WIDTH_BY_STATE.settings, height: 540 }); } catch (e) {}
   setTimeout(fitWindowToContent, 50);
 }
 
