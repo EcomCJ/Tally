@@ -292,10 +292,14 @@ async function refresh() {
 // a mid-transition measurement can't lock the window narrow.
 const WIDTH_BY_STATE = { collapsed: 272, expanded: 680, compact: 640, settings: 720 };
 const SOLO_WIDTH_BY_STATE = { expanded: 520, compact: 520 };
+const HEIGHT_PAD_BY_STATE = { collapsed: 4, expanded: 22, compact: 18, settings: 22 };
 function widthForState(stateKey) {
   return document.body.classList.contains("single-agent")
     ? (SOLO_WIDTH_BY_STATE[stateKey] || WIDTH_BY_STATE[stateKey])
     : WIDTH_BY_STATE[stateKey];
+}
+function nextFrame() {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 async function fitWindowToContent() {
   let target, stateKey;
@@ -309,10 +313,25 @@ async function fitWindowToContent() {
     target = el("pill");     stateKey = "collapsed";
   }
   if (!target) return;
-  void target.offsetHeight; // force layout
-  const h = Math.ceil(target.getBoundingClientRect().height);
+  const width = widthForState(stateKey);
+  try {
+    await invoke("set_window_size", {
+      width,
+      height: Math.max(Math.ceil(window.innerHeight || 0), 110)
+    });
+  } catch (e) {}
+  await nextFrame();
+  await nextFrame();
+  void target.offsetHeight; // force layout at the final width before measuring height
+  const rectHeight = target.getBoundingClientRect().height;
+  const h = Math.ceil(Math.max(
+    rectHeight,
+    target.scrollHeight,
+    document.body.scrollHeight,
+    document.documentElement.scrollHeight
+  ) + (HEIGHT_PAD_BY_STATE[stateKey] || 0));
   if (h < 50) return;
-  try { await invoke("set_window_size", { width: widthForState(stateKey), height: h }); } catch (e) {}
+  try { await invoke("set_window_size", { width, height: h }); } catch (e) {}
 }
 
 // ── State toggle

@@ -276,7 +276,7 @@ body.theme-light .weekly-tick {
 .panel {
   width: 100vw;
   margin: 0;
-  padding: 18px 18px 12px;
+  padding: 18px 18px 16px;
   overflow: visible;
   display: flex;
   flex-direction: column;
@@ -657,7 +657,7 @@ body.theme-light .roi::before {
   gap: 4px;
   flex-wrap: wrap;
   margin-top: 6px;
-  padding: 0;
+  padding: 0 0 2px;
   position: relative; z-index: 1;
 }
 .data-view-label {
