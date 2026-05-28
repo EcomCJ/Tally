@@ -100,7 +100,7 @@ pub fn build(refresh_ms: u64) -> Result<UsageSnapshot> {
         claude::ClaudeStats::default()
     };
     let codex_stats = if codex_available {
-        codex::collect()?
+        codex::collect(refresh_ms)?
     } else {
         codex::CodexStats::default()
     };

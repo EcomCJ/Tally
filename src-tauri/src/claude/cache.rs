@@ -287,22 +287,22 @@ fn should_serve_cached(
     now: Instant,
     fetched_at: Instant,
     fetched_at_wall: chrono::DateTime<Utc>,
-    cooldown_until: Option<Instant>,
+    _cooldown_until: Option<Instant>,
     ttl: std::time::Duration,
 ) -> bool {
+    // We require BOTH the monotonic clock AND the wall clock to agree the cache
+    // is fresh. The wall-clock check catches the laptop-sleep case where the
+    // monotonic Instant doesn't tick but the actual reset clock advanced hours.
     let fresh_enough = now.duration_since(fetched_at) < ttl;
     let wall_fresh_enough = Utc::now()
         .signed_duration_since(fetched_at_wall)
         .to_std()
         .map(|age| age < ttl)
         .unwrap_or(false);
-    if !fresh_enough || !wall_fresh_enough {
-        return false;
-    }
-    match cooldown_until {
-        Some(until) if now < until => true,
-        _ => true,
-    }
+    // The cooldown is consulted by the caller to decide WHICH upstream source
+    // to query (OAuth vs CLI vs Web); it doesn't change whether the cache
+    // itself is fresh enough to serve. Keeping the param for API stability.
+    fresh_enough && wall_fresh_enough
 }
 
 fn active_window_needs_secondary_probe(value: &ClaudeLiveLimits) -> bool {

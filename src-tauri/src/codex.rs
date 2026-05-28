@@ -363,13 +363,52 @@ fn fetch_oauth_rate_limits() -> Result<(CodexRateLimits, String, String, DateTim
     Ok((rl, label, raw, Utc::now()))
 }
 
-/// Returns: (rate_limits, plan_label_human, plan_type_raw, fetched_at)
-pub fn fetch_live_rate_limits() -> Result<(CodexRateLimits, String, String, DateTime<Utc>)> {
-    match fetch_oauth_rate_limits() {
-        Ok(result) => return Ok(result),
-        Err(e) => eprintln!("[tally] codex oauth fetch failed; falling back to RPC: {e}"),
+/// Minimum cache TTL — hard floor so the user's UI refresh setting can't
+/// hammer the live endpoint into a rate limit. Matches the Claude side's
+/// `MIN_CACHE_TTL` for symmetry.
+const MIN_CODEX_LIVE_TTL: StdDuration = StdDuration::from_secs(60);
+
+type LiveRateLimitsValue = (CodexRateLimits, String, String, DateTime<Utc>);
+
+struct LiveCacheEntry {
+    fetched_at: std::time::Instant,
+    value: LiveRateLimitsValue,
+}
+
+fn live_cache() -> &'static Mutex<Option<LiveCacheEntry>> {
+    static C: OnceLock<Mutex<Option<LiveCacheEntry>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(None))
+}
+
+/// Returns: (rate_limits, plan_label_human, plan_type_raw, fetched_at).
+///
+/// Caches the result in-process for `max(refresh_ms, 60s)` so each UI refresh
+/// doesn't trigger a fresh OAuth call (or, worse, a fresh `codex app-server`
+/// JSON-RPC subprocess spawn). Mirrors the Claude live-limits caching policy
+/// — single knob (`refresh_ms`) tied to the user's UI refresh interval.
+pub fn fetch_live_rate_limits(refresh_ms: u64) -> Result<LiveRateLimitsValue> {
+    let ttl = StdDuration::from_millis(refresh_ms).max(MIN_CODEX_LIVE_TTL);
+    {
+        let guard = live_cache().lock().unwrap();
+        if let Some(entry) = guard.as_ref() {
+            if entry.fetched_at.elapsed() < ttl {
+                return Ok(entry.value.clone());
+            }
+        }
     }
-    fetch_rpc_rate_limits()
+    let result = match fetch_oauth_rate_limits() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[tally] codex oauth fetch failed; falling back to RPC: {e}");
+            fetch_rpc_rate_limits()?
+        }
+    };
+    let mut guard = live_cache().lock().unwrap();
+    *guard = Some(LiveCacheEntry {
+        fetched_at: std::time::Instant::now(),
+        value: result.clone(),
+    });
+    Ok(result)
 }
 
 /// Spawn `codex app-server`, send initialize + account/rateLimits/read,
@@ -586,11 +625,12 @@ fn token_cache() -> &'static Mutex<Option<(FileSignature, LocalTokenStats)>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
-pub fn collect() -> Result<CodexStats> {
+pub fn collect(refresh_ms: u64) -> Result<CodexStats> {
     let mut stats = CodexStats::default();
 
-    // 1. Live rate limits via JSON-RPC (the authoritative source)
-    match fetch_live_rate_limits() {
+    // 1. Live rate limits via OAuth (fast path) → RPC (fallback), with the
+    //    in-process cache honoring the user's refresh interval.
+    match fetch_live_rate_limits(refresh_ms) {
         Ok((rl, plan_label, plan_type_raw, ts)) => {
             stats.rate_limits = rl;
             stats.plan_label = plan_label;

@@ -143,7 +143,25 @@ fn fetch_cli_usage_limits_once(timeout: StdDuration) -> Result<ClaudeLiveLimits>
 
     let _ = writer.write_all(b"\x03");
     let _ = writer.flush();
+    // Capture PID before kill so we can also reap the descendant process tree
+    // on Windows. The PTY child is cmd.exe → claude.exe → (helpers). Without
+    // a tree-kill, child.kill() only terminates cmd.exe and leaks claude.exe
+    // every probe — that's a real process leak on long-running Tally sessions.
+    let pty_pid = child.process_id();
     let _ = child.kill();
+    #[cfg(windows)]
+    if let Some(pid) = pty_pid {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F", "/T"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    let _ = pty_pid;
     while let Ok(chunk) = rx.try_recv() {
         output.push_str(&chunk);
     }

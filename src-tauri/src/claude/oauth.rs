@@ -57,11 +57,24 @@ struct RefreshResponse {
     expires_in: Option<i64>,
 }
 
-fn credentials_path() -> Result<PathBuf> {
+/// Returns the Claude config root, honoring the `CLAUDE_HOME` env var the same
+/// way Codex honors `CODEX_HOME`. Defaults to `~/.claude/`. Lets users with
+/// non-standard installs (relocated home, sandboxed CI runners, etc.) point
+/// Tally at the right credentials file without symlinks.
+fn claude_home_dir() -> Result<PathBuf> {
+    if let Some(raw) = std::env::var_os("CLAUDE_HOME") {
+        let s = raw.to_string_lossy().trim().to_string();
+        if !s.is_empty() {
+            return Ok(PathBuf::from(s));
+        }
+    }
     let mut p = dirs::home_dir().ok_or_else(|| anyhow!("no home dir"))?;
     p.push(".claude");
-    p.push(".credentials.json");
     Ok(p)
+}
+
+fn credentials_path() -> Result<PathBuf> {
+    Ok(claude_home_dir()?.join(".credentials.json"))
 }
 
 fn read_credentials() -> Result<(PathBuf, CredentialsFile)> {
