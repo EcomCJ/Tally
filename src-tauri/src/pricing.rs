@@ -105,54 +105,84 @@ pub struct CodexRate {
     pub output: f64, // reasoning charged at this rate too
 }
 
-/// Look up Codex/OpenAI pricing by model name. Public list prices May 2026.
-/// Default is gpt-5.5 (what Codex CLI runs today). Cached input is the
-/// vendor's discounted rate for content read from prompt cache.
+/// Look up Codex/OpenAI pricing by model name.
+/// Source: https://platform.openai.com/docs/pricing (verified 2026-05-29).
+///
+/// Recognized SKUs and their per-MTok rates (input / cached / output):
+/// - `gpt-5.5-pro` / `gpt-5.4-pro`: $30 / —  / $180  (no cache; cached==input)
+/// - `gpt-5.5`:                     $5  / $0.50 / $30
+/// - `gpt-5.4`:                     $2.50 / $0.25 / $15
+/// - `gpt-5.4-mini`:                $0.75 / $0.075 / $4.50
+/// - `gpt-5.4-nano`:                $0.20 / $0.02 / $1.25
+/// - `gpt-5.3-codex` (Codex CLI):   $1.75 / $0.175 / $14
+/// - `gpt-5.3-chat`:                $1.75 / $0.175 / $14
+/// - `chat-latest`:                 $5 / $0.50 / $30
+/// - `gpt-5-codex` (legacy alias):  → routes to gpt-5.3-codex pricing
+/// - `o3` / `o4` (deprecated):      $5 / $0.50 / $20 fallback
+/// - Unknown: defaults to gpt-5.5 (the most common modern SKU users actually
+///   run; matches what Codex CLI defaults to today).
+///
+/// Order of checks matters — more specific suffixes (`-mini`, `-nano`, `-pro`,
+/// `-codex`) MUST be tested before the bare `gpt-5.4` / `gpt-5.5` substrings
+/// because the bare patterns also match the variant strings.
 pub fn codex_rate(model: &str) -> CodexRate {
     let m = model.to_lowercase();
-    if m.contains("gpt-5-codex") {
-        // gpt-5-codex SKU — same family as base gpt-5
-        CodexRate {
-            input: 1.25,
-            cached_input: 0.125,
-            output: 10.00,
-        }
-    } else if m == "gpt-5" || m.starts_with("gpt-5-") && !m.contains("5.") && !m.contains("5-5") {
-        // Plain gpt-5 (not 5.x variants)
-        CodexRate {
-            input: 1.25,
-            cached_input: 0.125,
-            output: 10.00,
-        }
-    } else if m.contains("gpt-5.4") || m.contains("gpt-5-4") {
-        // gpt-5.4 — between 5 and 5.5; treat as gpt-5.5 family by default
-        CodexRate {
-            input: 5.00,
-            cached_input: 0.50,
-            output: 30.00,
-        }
-    } else if m.contains("gpt-5.5") || m.contains("gpt-5-5") {
-        // GPT-5.5 standard public pricing
-        CodexRate {
-            input: 5.00,
-            cached_input: 0.50,
-            output: 30.00,
-        }
-    } else if m.contains("o3") || m.contains("o4") {
-        // Reasoning-heavy older models
-        CodexRate {
-            input: 5.00,
-            cached_input: 0.50,
-            output: 20.00,
-        }
-    } else {
-        // Unknown / future model — default to gpt-5.5 (current Codex CLI default)
-        CodexRate {
-            input: 5.00,
-            cached_input: 0.50,
-            output: 30.00,
-        }
+
+    // --- Specialized codex / chat SKUs first ---
+    if m.contains("gpt-5.3-codex") || m.contains("gpt-5-3-codex") {
+        return CodexRate { input: 1.75, cached_input: 0.175, output: 14.00 };
     }
+    if m.contains("gpt-5.3-chat") || m.contains("gpt-5-3-chat") {
+        return CodexRate { input: 1.75, cached_input: 0.175, output: 14.00 };
+    }
+    // gpt-5-codex is the legacy Codex CLI model id; route to the same rate as
+    // its modern successor (gpt-5.3-codex) so older sessions price correctly.
+    if m.contains("gpt-5-codex") {
+        return CodexRate { input: 1.75, cached_input: 0.175, output: 14.00 };
+    }
+
+    // --- gpt-5.4 variants (must come BEFORE plain gpt-5.4) ---
+    if m.contains("gpt-5.4-mini") || m.contains("gpt-5-4-mini") {
+        return CodexRate { input: 0.75, cached_input: 0.075, output: 4.50 };
+    }
+    if m.contains("gpt-5.4-nano") || m.contains("gpt-5-4-nano") {
+        return CodexRate { input: 0.20, cached_input: 0.02, output: 1.25 };
+    }
+    if m.contains("gpt-5.4-pro") || m.contains("gpt-5-4-pro") {
+        // No cache pricing published — set cached == input (no discount).
+        return CodexRate { input: 30.00, cached_input: 30.00, output: 180.00 };
+    }
+
+    // --- gpt-5.5 variants (must come BEFORE plain gpt-5.5) ---
+    if m.contains("gpt-5.5-pro") || m.contains("gpt-5-5-pro") {
+        return CodexRate { input: 30.00, cached_input: 30.00, output: 180.00 };
+    }
+
+    // --- Bare 5.4 / 5.5 families ---
+    if m.contains("gpt-5.4") || m.contains("gpt-5-4") {
+        return CodexRate { input: 2.50, cached_input: 0.25, output: 15.00 };
+    }
+    if m.contains("gpt-5.5") || m.contains("gpt-5-5") {
+        return CodexRate { input: 5.00, cached_input: 0.50, output: 30.00 };
+    }
+
+    // --- Specialized chat-latest (ChatGPT-equivalent passthrough) ---
+    if m.contains("chat-latest") {
+        return CodexRate { input: 5.00, cached_input: 0.50, output: 30.00 };
+    }
+
+    // --- Legacy plain gpt-5 (predates 5.3/5.4/5.5 split) ---
+    if m == "gpt-5" || (m.starts_with("gpt-5-") && !m.contains("5.") && !m.contains("5-5")) {
+        return CodexRate { input: 1.75, cached_input: 0.175, output: 14.00 };
+    }
+
+    // --- Deprecated reasoning models (o3 / o4) ---
+    if m.contains("o3") || m.contains("o4") {
+        return CodexRate { input: 5.00, cached_input: 0.50, output: 20.00 };
+    }
+
+    // --- Unknown / future model — default to gpt-5.5 (current Codex CLI default) ---
+    CodexRate { input: 5.00, cached_input: 0.50, output: 30.00 }
 }
 
 /// Cost for a single Claude message's token usage.
@@ -245,5 +275,78 @@ mod tests {
     #[test]
     fn opus_5_is_modern() {
         approx(claude_rate("claude-opus-5-0-20270101").input, 5.00);
+    }
+
+    // ================================================================
+    // Codex / OpenAI pricing tests — guard the SKU routing.
+    // ================================================================
+
+    // --- gpt-5.5 family ---
+    #[test] fn gpt_55_pricing() { let r = codex_rate("gpt-5.5"); approx(r.input, 5.00); approx(r.cached_input, 0.50); approx(r.output, 30.00); }
+    #[test] fn gpt_55_pro_pricing() { let r = codex_rate("gpt-5.5-pro"); approx(r.input, 30.00); approx(r.output, 180.00); }
+
+    // --- gpt-5.4 family (the bug we just fixed: was $5/$30, should be $2.50/$15) ---
+    #[test] fn gpt_54_pricing_fix() { let r = codex_rate("gpt-5.4"); approx(r.input, 2.50); approx(r.cached_input, 0.25); approx(r.output, 15.00); }
+    #[test] fn gpt_54_mini_pricing() { let r = codex_rate("gpt-5.4-mini"); approx(r.input, 0.75); approx(r.output, 4.50); }
+    #[test] fn gpt_54_nano_pricing() { let r = codex_rate("gpt-5.4-nano"); approx(r.input, 0.20); approx(r.output, 1.25); }
+    #[test] fn gpt_54_pro_pricing() { let r = codex_rate("gpt-5.4-pro"); approx(r.input, 30.00); approx(r.output, 180.00); }
+
+    // --- Codex CLI-specific SKUs ---
+    #[test] fn gpt_53_codex_pricing() { let r = codex_rate("gpt-5.3-codex"); approx(r.input, 1.75); approx(r.cached_input, 0.175); approx(r.output, 14.00); }
+    #[test] fn gpt_5_codex_legacy_alias() { let r = codex_rate("gpt-5-codex"); approx(r.input, 1.75); approx(r.output, 14.00); }
+    #[test] fn gpt_53_chat_pricing() { let r = codex_rate("gpt-5.3-chat"); approx(r.input, 1.75); approx(r.output, 14.00); }
+
+    // --- Variant ordering: -mini / -nano / -pro must NOT fall into bare 5.4 ---
+    #[test] fn variant_does_not_collapse_into_bare_family() {
+        // bare 5.4 = $2.50, mini = $0.75 — if ordering broke these would equal
+        assert_ne!(codex_rate("gpt-5.4").input, codex_rate("gpt-5.4-mini").input);
+        assert_ne!(codex_rate("gpt-5.4").input, codex_rate("gpt-5.4-nano").input);
+        assert_ne!(codex_rate("gpt-5.4").input, codex_rate("gpt-5.4-pro").input);
+    }
+
+    // --- Both dash and dot separators recognized ---
+    #[test] fn dash_separator_for_codex() {
+        approx(codex_rate("gpt-5-3-codex").input, 1.75);
+    }
+    #[test] fn dash_separator_for_54_mini() {
+        approx(codex_rate("gpt-5-4-mini").input, 0.75);
+    }
+
+    // --- Specialized chat-latest passthrough ---
+    #[test] fn chat_latest_pricing() { let r = codex_rate("chat-latest"); approx(r.input, 5.00); approx(r.output, 30.00); }
+
+    // --- Composite cost: 1M input + 100k output on gpt-5.4 (the bug fix) ---
+    #[test]
+    fn gpt_54_composite_cost_fix() {
+        // Before: 1M × $5 + 100k × $30 = $5 + $3 = $8 (wrong)
+        // After:  1M × $2.50 + 100k × $15 = $2.50 + $1.50 = $4.00 (correct)
+        let cost = codex_turn_cost("gpt-5.4", 1_000_000, 0, 100_000, 0);
+        approx(cost, 4.00);
+    }
+
+    // --- Composite cost: typical Codex CLI turn on gpt-5.3-codex with cache ---
+    #[test]
+    fn gpt_53_codex_composite_cost_with_cache() {
+        // 500k total input (300k cached + 200k fresh) + 50k output + 10k reasoning
+        // = 200k × $1.75 + 300k × $0.175 + 60k × $14
+        // = $0.35 + $0.0525 + $0.84 = $1.2425
+        let cost = codex_turn_cost("gpt-5.3-codex", 500_000, 300_000, 50_000, 10_000);
+        approx(cost, 1.2425);
+    }
+
+    // --- Unknown model defaults to gpt-5.5 pricing ---
+    #[test]
+    fn unknown_codex_model_defaults_to_55() {
+        let r = codex_rate("gpt-future-2027");
+        approx(r.input, 5.00);
+        approx(r.output, 30.00);
+    }
+
+    // --- Reasoning tokens billed at output rate ---
+    #[test]
+    fn reasoning_tokens_priced_at_output_rate() {
+        // 0 input, 0 output, 100k reasoning @ $30/MTok on gpt-5.5 = $3.00
+        let cost = codex_turn_cost("gpt-5.5", 0, 0, 0, 100_000);
+        approx(cost, 3.00);
     }
 }
