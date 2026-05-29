@@ -234,6 +234,19 @@ pub(crate) fn claude_cli_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Detects a Claude Code update banner/prompt in captured CLI output. Used
+/// only to produce a clearer error message when a probe yields no usage data —
+/// never to drive keystrokes. Matches the normalized (lowercase-alphanumeric)
+/// forms of the phrasings Claude Code uses for update notices.
+fn looks_like_update_prompt(clean: &str) -> bool {
+    let n = normalize_label(clean);
+    n.contains("updateavailable")
+        || n.contains("newversionofclaudecode")
+        || n.contains("anewversionisavailable")
+        || (n.contains("npminstall") && n.contains("claudecode"))
+        || n.contains("runclaudeupdate")
+}
+
 fn usage_output_ready(text: &str) -> bool {
     let clean = strip_ansi(text);
     let normalized: String = clean
@@ -258,6 +271,16 @@ fn parse_cli_usage_limits(raw: &str) -> Result<ClaudeLiveLimits> {
         return Err(anyhow!("Claude CLI could not load usage data"));
     }
     if !usage_output_looks_relevant(&clean) {
+        // Surface a specific, actionable error when the probe is blocked by an
+        // update banner rather than a vague "startup output". We do NOT inject
+        // keystrokes to dismiss it (the existing periodic-Enter loop already
+        // clears non-blocking banners, and speculative key-injection into an
+        // unverified Claude prompt risks corrupting a working capture).
+        if looks_like_update_prompt(&clean) {
+            return Err(anyhow!(
+                "Claude CLI /usage blocked by an update prompt — run `claude` to update, then retry"
+            ));
+        }
         return Err(anyhow!("Claude CLI /usage looked like startup output"));
     }
     let panel = trim_to_latest_usage_panel(&clean).unwrap_or(clean.as_str());
@@ -750,6 +773,31 @@ fn weekday_from_text(text: &str) -> Option<Weekday> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_prompt_detector_matches_known_phrasings() {
+        assert!(looks_like_update_prompt("Update available! 2.1.0 -> 2.2.0"));
+        assert!(looks_like_update_prompt(
+            "A new version of Claude Code is ready"
+        ));
+        assert!(looks_like_update_prompt(
+            "Run npm install -g @anthropic-ai/claude-code to update"
+        ));
+        // Real usage output must NOT trip the detector (no false positives that
+        // would mask a genuine parse failure).
+        assert!(!looks_like_update_prompt(
+            "Current session 42% used, resets 3:00pm"
+        ));
+        assert!(!looks_like_update_prompt(""));
+    }
+
+    #[test]
+    fn update_prompt_yields_actionable_error() {
+        let err = parse_cli_usage_limits("Update available! Run claude update").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("update prompt"), "got: {msg}");
+        assert!(msg.contains("claude"), "got: {msg}");
+    }
 
     #[test]
     fn parses_current_session_without_sonnet_overwrite() {

@@ -102,7 +102,7 @@ fn is_token_expired(block: &OauthBlock) -> bool {
 }
 
 fn post_refresh(refresh_token: &str) -> Result<RefreshResponse> {
-    let resp = ureq::post(CLAUDE_OAUTH_TOKEN_URL)
+    let result = ureq::post(CLAUDE_OAUTH_TOKEN_URL)
         .set("Content-Type", "application/json")
         .set(
             "User-Agent",
@@ -113,10 +113,24 @@ fn post_refresh(refresh_token: &str) -> Result<RefreshResponse> {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
             "client_id": CLAUDE_OAUTH_CLIENT_ID,
-        }))
-        .map_err(|e| anyhow!("refresh claude oauth token: {e}"))?;
-    resp.into_json::<RefreshResponse>()
-        .map_err(|e| anyhow!("decode claude oauth refresh: {e}"))
+        }));
+    match result {
+        Ok(resp) => resp
+            .into_json::<RefreshResponse>()
+            .map_err(|e| anyhow!("decode claude oauth refresh: {e}")),
+        // Non-2xx: read the body and classify so the surfaced message is
+        // actionable (re-login vs transient vs client mismatch) instead of an
+        // opaque "status 400". The body read consumes the response.
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(anyhow!(
+                "claude {}",
+                crate::oauth_errors::refresh_error_message(code, &body, "claude")
+            ))
+        }
+        // Transport-level failure (DNS, TLS, timeout, connection refused).
+        Err(e) => Err(anyhow!("claude token refresh network error: {e}")),
+    }
 }
 
 /// Returns a non-expired access token, refreshing + persisting the credentials

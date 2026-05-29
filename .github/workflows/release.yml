@@ -37,6 +37,12 @@ jobs:
       - name: npm install
         run: npm install
 
+      # Gate the release on the full Rust test suite (pricing, oauth error
+      # classification, CLI usage parsing, cache freshness, file signatures).
+      # SAC blocks `cargo test` on dev machines, so CI is where it actually runs.
+      - name: Run tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --no-fail-fast
+
       - name: Build + publish Tauri bundles
         uses: tauri-apps/tauri-action@v0
         env:

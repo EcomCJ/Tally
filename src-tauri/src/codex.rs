@@ -198,7 +198,7 @@ fn refresh_codex_auth(
         .refresh_token
         .as_deref()
         .ok_or_else(|| anyhow!("codex auth missing refresh_token"))?;
-    let resp = ureq::post("https://auth.openai.com/oauth/token")
+    let result = ureq::post("https://auth.openai.com/oauth/token")
         .set("Content-Type", "application/json")
         .timeout(std::time::Duration::from_secs(30))
         .send_json(serde_json::json!({
@@ -206,8 +206,18 @@ fn refresh_codex_auth(
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
             "scope": "openid profile email"
-        }))
-        .map_err(|e| anyhow!("refresh codex oauth token: {e}"))?;
+        }));
+    let resp = match result {
+        Ok(resp) => resp,
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            return Err(anyhow!(
+                "codex {}",
+                crate::oauth_errors::refresh_error_message(code, &body, "codex")
+            ));
+        }
+        Err(e) => return Err(anyhow!("codex token refresh network error: {e}")),
+    };
     let body: CodexRefreshResponse = resp
         .into_json()
         .map_err(|e| anyhow!("decode codex oauth refresh: {e}"))?;

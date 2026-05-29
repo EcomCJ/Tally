@@ -10,6 +10,7 @@ use tauri::{
 mod claude;
 mod codex;
 mod history;
+mod oauth_errors;
 mod plans;
 mod pricing;
 mod snapshot;
