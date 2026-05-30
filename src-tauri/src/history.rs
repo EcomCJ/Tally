@@ -252,6 +252,7 @@ impl DailyUsage {
 
     fn keep_max(&mut self, other: &DailyUsage) -> bool {
         let before = self.clone();
+        let incoming_covers_existing = other.covers(self);
         self.tokens.input = self.tokens.input.max(other.tokens.input);
         self.tokens.output = self.tokens.output.max(other.tokens.output);
         self.tokens.cache_read = self.tokens.cache_read.max(other.tokens.cache_read);
@@ -259,7 +260,11 @@ impl DailyUsage {
         self.tokens.cached_input = self.tokens.cached_input.max(other.tokens.cached_input);
         self.tokens.reasoning = self.tokens.reasoning.max(other.tokens.reasoning);
         self.requests = self.requests.max(other.requests);
-        self.api_equiv = self.api_equiv.max(other.api_equiv);
+        if incoming_covers_existing {
+            self.api_equiv = other.api_equiv;
+        } else {
+            self.api_equiv = self.api_equiv.max(other.api_equiv);
+        }
         self.tokens.input != before.tokens.input
             || self.tokens.output != before.tokens.output
             || self.tokens.cache_read != before.tokens.cache_read
@@ -268,6 +273,16 @@ impl DailyUsage {
             || self.tokens.reasoning != before.tokens.reasoning
             || self.requests != before.requests
             || (self.api_equiv - before.api_equiv).abs() > f64::EPSILON
+    }
+
+    fn covers(&self, other: &DailyUsage) -> bool {
+        self.tokens.input >= other.tokens.input
+            && self.tokens.output >= other.tokens.output
+            && self.tokens.cache_read >= other.tokens.cache_read
+            && self.tokens.cache_write >= other.tokens.cache_write
+            && self.tokens.cached_input >= other.tokens.cached_input
+            && self.tokens.reasoning >= other.tokens.reasoning
+            && self.requests >= other.requests
     }
 }
 
@@ -381,5 +396,29 @@ mod tests {
         };
         assert!(upsert_vendor_day(&mut existing, &larger));
         assert_eq!(existing.unwrap().requests, 2);
+    }
+
+    #[test]
+    fn daily_upsert_allows_cost_repricing_when_incoming_covers_existing_usage() {
+        let original = DailyUsage {
+            tokens: DailyTokens {
+                input: 100,
+                output: 50,
+                cache_read: 20,
+                cache_write: 10,
+                cached_input: 0,
+                reasoning: 0,
+            },
+            requests: 5,
+            api_equiv: 75.0,
+        };
+        let repriced = DailyUsage {
+            api_equiv: 25.0,
+            ..original.clone()
+        };
+        let mut slot = Some(original);
+
+        assert!(upsert_vendor_day(&mut slot, &repriced));
+        assert_eq!(slot.unwrap().api_equiv, 25.0);
     }
 }
