@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 use tauri::{
@@ -24,6 +25,12 @@ const APP_ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
 
 struct ShellState {
     tray: Mutex<Option<TrayIcon>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct WindowPlacement {
+    x: i32,
+    y: i32,
 }
 
 /// Returns a fresh usage snapshot. `refresh_ms` is the user's UI refresh
@@ -58,7 +65,6 @@ fn resize_window(window: WebviewWindow, expanded: bool) -> Result<(), String> {
         .set_size(LogicalSize::new(w, h))
         .map_err(|e| e.to_string())?;
     let _ = window.set_resizable(false);
-    pin_top_right(&window).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -70,7 +76,6 @@ fn set_window_size(window: WebviewWindow, width: f64, height: f64) -> Result<(),
         .set_size(LogicalSize::new(width.max(240.0), height.max(110.0)))
         .map_err(|e| e.to_string())?;
     let _ = window.set_resizable(false);
-    pin_top_right(&window).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -180,6 +185,37 @@ fn pin_top_right(window: &WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
+fn placement_path() -> Option<std::path::PathBuf> {
+    let mut path = dirs::data_local_dir()?;
+    path.push("tally");
+    let _ = std::fs::create_dir_all(&path);
+    path.push("window-placement.json");
+    Some(path)
+}
+
+fn read_window_placement() -> Option<WindowPlacement> {
+    let path = placement_path()?;
+    let body = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&body).ok()
+}
+
+fn write_window_placement(pos: tauri::PhysicalPosition<i32>) {
+    let Some(path) = placement_path() else {
+        return;
+    };
+    let placement = WindowPlacement { x: pos.x, y: pos.y };
+    if let Ok(body) = serde_json::to_string(&placement) {
+        let _ = std::fs::write(path, body);
+    }
+}
+
+fn restore_or_pin(window: &WebviewWindow) -> tauri::Result<()> {
+    if let Some(placement) = read_window_placement() {
+        return window.set_position(tauri::PhysicalPosition::new(placement.x, placement.y));
+    }
+    pin_top_right(window)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -208,7 +244,7 @@ pub fn run() {
             let _ = window.set_size(LogicalSize::new(COLLAPSED.0, COLLAPSED.1));
             let _ = window.set_always_on_top(true);
             let _ = window.set_skip_taskbar(true);
-            let _ = pin_top_right(&window);
+            let _ = restore_or_pin(&window);
             let _ = window.show();
 
             let tray = build_tray(app.handle())?;
@@ -216,11 +252,13 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::Moved(position) => write_window_placement(*position),
+            WindowEvent::CloseRequested { api, .. } => {
                 let _ = window.hide();
                 api.prevent_close();
             }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -264,7 +302,6 @@ fn toggle_main(app: &AppHandle) {
         if visible {
             let _ = win.hide();
         } else {
-            let _ = pin_top_right(&win);
             let _ = win.show();
             let _ = win.set_focus();
         }

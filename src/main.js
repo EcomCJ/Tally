@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS = {
   showTaskbarIcon: false,
   autoCheckUpdates: true,
   compactDataView: false,
+  viewMode: "collapsed",
   // ROI denominator behavior:
   //   "monthly"  → always divide by full monthly sub cost (legacy)
   //   "prorated" → divide by sub cost scaled to selected period
@@ -35,6 +36,9 @@ function normalizeSettings(s) {
   next.showTrayIcon = next.showTrayIcon !== false;
   next.showTaskbarIcon = next.showTaskbarIcon === true;
   next.compactDataView = next.compactDataView === true;
+  if (!["collapsed", "expanded", "compact"].includes(next.viewMode)) {
+    next.viewMode = DEFAULT_SETTINGS.viewMode;
+  }
   if (!next.showTrayIcon && !next.showTaskbarIcon) {
     next.showTaskbarIcon = true;
   }
@@ -364,6 +368,8 @@ async function fitWindowToContent() {
 
 // ── State toggle
 async function expand() {
+  settings.viewMode = "expanded";
+  saveSettings(settings);
   document.body.classList.remove("state-collapsed", "state-compact", "state-settings");
   document.body.classList.add("state-expanded");
   try { await invoke("resize_window", { expanded: true }); } catch (e) {}
@@ -371,12 +377,16 @@ async function expand() {
   scheduleFitWindowToContent(50);
 }
 async function compact() {
+  settings.viewMode = "compact";
+  saveSettings(settings);
   document.body.classList.remove("state-collapsed", "state-expanded", "state-settings");
   document.body.classList.add("state-compact");
   try { await invoke("resize_window", { expanded: true }); } catch (e) {}
   scheduleFitWindowToContent(50);
 }
 async function collapse() {
+  settings.viewMode = "collapsed";
+  saveSettings(settings);
   document.body.classList.remove("state-expanded", "state-compact", "state-settings");
   document.body.classList.add("state-collapsed");
   try { await invoke("resize_window", { expanded: false }); } catch (e) {}
@@ -387,6 +397,16 @@ async function showSettings() {
   document.body.classList.add("state-settings");
   try { await invoke("set_window_size", { width: WIDTH_BY_STATE.settings, height: 540 }); } catch (e) {}
   scheduleFitWindowToContent(50);
+}
+
+async function restoreViewMode() {
+  if (settings.viewMode === "expanded") {
+    await expand();
+  } else if (settings.viewMode === "compact") {
+    await compact();
+  } else {
+    await collapse();
+  }
 }
 
 // ── Apply settings to DOM/timers
@@ -669,6 +689,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const t2 = el("codexTier");
   if (t2 && settings.codexTier) t2.textContent = settings.codexTier;
 
+  void restoreViewMode();
   refresh();
   if (settings.autoCheckUpdates) {
     setTimeout(() => checkForUpdates(false), 1500);
