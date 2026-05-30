@@ -252,7 +252,7 @@ impl DailyUsage {
 
     fn keep_max(&mut self, other: &DailyUsage) -> bool {
         let before = self.clone();
-        let incoming_covers_existing = other.covers(self);
+        let incoming_covers_existing = other.covers(self) || other.covers_cost_reprice(self);
         self.tokens.input = self.tokens.input.max(other.tokens.input);
         self.tokens.output = self.tokens.output.max(other.tokens.output);
         self.tokens.cache_read = self.tokens.cache_read.max(other.tokens.cache_read);
@@ -282,6 +282,23 @@ impl DailyUsage {
             && self.tokens.cache_write >= other.tokens.cache_write
             && self.tokens.cached_input >= other.tokens.cached_input
             && self.tokens.reasoning >= other.tokens.reasoning
+    }
+
+    fn covers_cost_reprice(&self, other: &DailyUsage) -> bool {
+        let incoming = self.tokens.total_billable_units();
+        let existing = other.tokens.total_billable_units();
+        existing >= 1_000_000 && incoming.saturating_mul(100) >= existing.saturating_mul(85)
+    }
+}
+
+impl DailyTokens {
+    fn total_billable_units(&self) -> u64 {
+        self.input
+            .saturating_add(self.output)
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write)
+            .saturating_add(self.cached_input)
+            .saturating_add(self.reasoning)
     }
 }
 
@@ -446,5 +463,72 @@ mod tests {
         let updated = slot.unwrap();
         assert_eq!(updated.requests, 10);
         assert_eq!(updated.api_equiv, 25.0);
+    }
+
+    #[test]
+    fn daily_upsert_reprices_when_fresh_scan_has_broad_token_coverage() {
+        let original = DailyUsage {
+            tokens: DailyTokens {
+                input: 1_000,
+                output: 10_000,
+                cache_read: 1_000_000,
+                cache_write: 100_000,
+                cached_input: 0,
+                reasoning: 0,
+            },
+            requests: 100,
+            api_equiv: 300.0,
+        };
+        let repriced = DailyUsage {
+            tokens: DailyTokens {
+                input: 900,
+                output: 9_500,
+                cache_read: 900_000,
+                cache_write: 95_000,
+                cached_input: 0,
+                reasoning: 0,
+            },
+            requests: 90,
+            api_equiv: 100.0,
+        };
+        let mut slot = Some(original);
+
+        assert!(upsert_vendor_day(&mut slot, &repriced));
+        let updated = slot.unwrap();
+        assert_eq!(updated.tokens.cache_read, 1_000_000);
+        assert_eq!(updated.requests, 100);
+        assert_eq!(updated.api_equiv, 100.0);
+    }
+
+    #[test]
+    fn daily_upsert_refuses_reprice_when_fresh_scan_is_too_partial() {
+        let original = DailyUsage {
+            tokens: DailyTokens {
+                input: 1_000,
+                output: 10_000,
+                cache_read: 1_000_000,
+                cache_write: 100_000,
+                cached_input: 0,
+                reasoning: 0,
+            },
+            requests: 100,
+            api_equiv: 300.0,
+        };
+        let partial = DailyUsage {
+            tokens: DailyTokens {
+                input: 100,
+                output: 1_000,
+                cache_read: 100_000,
+                cache_write: 10_000,
+                cached_input: 0,
+                reasoning: 0,
+            },
+            requests: 10,
+            api_equiv: 10.0,
+        };
+        let mut slot = Some(original);
+
+        assert!(!upsert_vendor_day(&mut slot, &partial));
+        assert_eq!(slot.unwrap().api_equiv, 300.0);
     }
 }
