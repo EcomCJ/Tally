@@ -57,25 +57,46 @@ async fn get_snapshot(refresh_ms: Option<u64>) -> Result<snapshot::UsageSnapshot
     .map_err(|e| format!("get_snapshot worker join failed: {e}"))?
 }
 
+fn right_anchor_position(
+    window: &WebviewWindow,
+    new_width: f64,
+) -> Option<tauri::PhysicalPosition<i32>> {
+    let old_pos = window.outer_position().ok()?;
+    let old_size = window.outer_size().ok()?;
+    let scale = window.scale_factor().ok().unwrap_or(1.0);
+    let new_width_px = (new_width * scale).round() as i32;
+    Some(tauri::PhysicalPosition::new(
+        old_pos.x + old_size.width as i32 - new_width_px,
+        old_pos.y,
+    ))
+}
+
+fn resize_preserving_right_anchor(
+    window: &WebviewWindow,
+    width: f64,
+    height: f64,
+) -> tauri::Result<()> {
+    let next_pos = right_anchor_position(window, width);
+    let _ = window.set_resizable(true);
+    window.set_size(LogicalSize::new(width.max(240.0), height.max(110.0)))?;
+    if let Some(pos) = next_pos {
+        window.set_position(pos)?;
+    }
+    let _ = window.set_resizable(false);
+    Ok(())
+}
+
 #[tauri::command]
 fn resize_window(window: WebviewWindow, expanded: bool) -> Result<(), String> {
     let (w, h) = if expanded { EXPANDED } else { COLLAPSED };
-    let _ = window.set_resizable(true);
-    window
-        .set_size(LogicalSize::new(w, h))
-        .map_err(|e| e.to_string())?;
-    let _ = window.set_resizable(false);
+    resize_preserving_right_anchor(&window, w, h).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 /// Set window to a specific size (used for content-fit auto-sizing).
 #[tauri::command]
 fn set_window_size(window: WebviewWindow, width: f64, height: f64) -> Result<(), String> {
-    let _ = window.set_resizable(true);
-    window
-        .set_size(LogicalSize::new(width.max(240.0), height.max(110.0)))
-        .map_err(|e| e.to_string())?;
-    let _ = window.set_resizable(false);
+    resize_preserving_right_anchor(&window, width, height).map_err(|e| e.to_string())?;
     Ok(())
 }
 
