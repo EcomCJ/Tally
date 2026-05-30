@@ -41,7 +41,9 @@ pub fn extract_oauth_error_code(body: &str) -> Option<String> {
     if let Some(err) = json.get("error").and_then(|e| e.as_str()) {
         return Some(err.to_string());
     }
-    json.get("code").and_then(|c| c.as_str()).map(str::to_string)
+    json.get("code")
+        .and_then(|c| c.as_str())
+        .map(str::to_string)
 }
 
 /// Classify a refresh failure by HTTP status + body. Returns the failure kind
@@ -54,9 +56,7 @@ pub fn classify_refresh_failure(status: u16, body: &str) -> RefreshFailureKind {
             | "refresh_token_expired"
             | "refresh_token_invalidated"
             | "refresh_token_reused" => return RefreshFailureKind::NeedsRelogin,
-            "invalid_client" | "unauthorized_client" => {
-                return RefreshFailureKind::ClientRejected
-            }
+            "invalid_client" | "unauthorized_client" => return RefreshFailureKind::ClientRejected,
             _ => {}
         }
     }
@@ -83,9 +83,7 @@ pub fn refresh_error_message(status: u16, body: &str, relogin_cmd: &str) -> Stri
                     "refresh token already used (another tool rotated it) — run `{relogin_cmd}` to log in again"
                 )
             } else {
-                format!(
-                    "refresh token expired or revoked — run `{relogin_cmd}` to log in again"
-                )
+                format!("refresh token expired or revoked — run `{relogin_cmd}` to log in again")
             }
         }
         RefreshFailureKind::ClientRejected => {

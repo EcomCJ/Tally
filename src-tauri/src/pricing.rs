@@ -106,85 +106,152 @@ pub struct CodexRate {
 }
 
 /// Look up Codex/OpenAI pricing by model name.
-/// Source: https://platform.openai.com/docs/pricing (verified 2026-05-29).
-///
-/// Recognized SKUs and their per-MTok rates (input / cached / output):
-/// - `gpt-5.5-pro` / `gpt-5.4-pro`: $30 / —  / $180  (no cache; cached==input)
-/// - `gpt-5.5`:                     $5  / $0.50 / $30
-/// - `gpt-5.4`:                     $2.50 / $0.25 / $15
-/// - `gpt-5.4-mini`:                $0.75 / $0.075 / $4.50
-/// - `gpt-5.4-nano`:                $0.20 / $0.02 / $1.25
-/// - `gpt-5.3-codex` (Codex CLI):   $1.75 / $0.175 / $14
-/// - `gpt-5.3-chat`:                $1.75 / $0.175 / $14
-/// - `chat-latest`:                 $5 / $0.50 / $30
-/// - `gpt-5-codex` (legacy alias):  → routes to gpt-5.3-codex pricing
-/// - `o3` / `o4` (deprecated):      $5 / $0.50 / $20 fallback
-/// - Unknown: defaults to gpt-5.5 (the most common modern SKU users actually
-///   run; matches what Codex CLI defaults to today).
-///
-/// Order of checks matters — more specific suffixes (`-mini`, `-nano`, `-pro`,
-/// `-codex`) MUST be tested before the bare `gpt-5.4` / `gpt-5.5` substrings
-/// because the bare patterns also match the variant strings.
+/// Source: https://platform.openai.com/docs/pricing (verified 2026-05-30).
+/// Also supports internal Codex labels observed in local JSONL, such as
+/// `gpt-5.4` and `gpt-5.5`, so historical rows do not fall through.
 pub fn codex_rate(model: &str) -> CodexRate {
     let m = model.to_lowercase();
 
-    // --- Specialized codex / chat SKUs first ---
-    if m.contains("gpt-5.3-codex") || m.contains("gpt-5-3-codex") {
-        return CodexRate { input: 1.75, cached_input: 0.175, output: 14.00 };
+    if m.contains("gpt-5.2-pro") || m.contains("gpt-5-2-pro") {
+        return CodexRate {
+            input: 21.00,
+            cached_input: 21.00,
+            output: 168.00,
+        };
     }
-    if m.contains("gpt-5.3-chat") || m.contains("gpt-5-3-chat") {
-        return CodexRate { input: 1.75, cached_input: 0.175, output: 14.00 };
+    if m.contains("gpt-5-pro") {
+        return CodexRate {
+            input: 15.00,
+            cached_input: 15.00,
+            output: 120.00,
+        };
     }
-    // gpt-5-codex is the legacy Codex CLI model id; route to the same rate as
-    // its modern successor (gpt-5.3-codex) so older sessions price correctly.
-    if m.contains("gpt-5-codex") {
-        return CodexRate { input: 1.75, cached_input: 0.175, output: 14.00 };
+    if m.contains("gpt-5.2-codex")
+        || m.contains("gpt-5-2-codex")
+        || m.contains("gpt-5.2-chat-latest")
+        || m.contains("gpt-5-2-chat-latest")
+        || m == "gpt-5.2"
+        || m.starts_with("gpt-5.2-")
+        || m == "gpt-5-2"
+    {
+        return CodexRate {
+            input: 1.75,
+            cached_input: 0.175,
+            output: 14.00,
+        };
+    }
+    if m.contains("gpt-5.3-codex")
+        || m.contains("gpt-5-3-codex")
+        || m.contains("gpt-5.3-chat")
+        || m.contains("gpt-5-3-chat")
+    {
+        return CodexRate {
+            input: 1.75,
+            cached_input: 0.175,
+            output: 14.00,
+        };
+    }
+    if m.contains("gpt-5-mini") {
+        return CodexRate {
+            input: 0.25,
+            cached_input: 0.025,
+            output: 2.00,
+        };
+    }
+    if m.contains("gpt-5-nano") {
+        return CodexRate {
+            input: 0.05,
+            cached_input: 0.005,
+            output: 0.40,
+        };
+    }
+    if m.contains("gpt-5.1-codex")
+        || m.contains("gpt-5-1-codex")
+        || m.contains("gpt-5.1-chat-latest")
+        || m.contains("gpt-5-1-chat-latest")
+        || m == "gpt-5.1"
+        || m.starts_with("gpt-5.1-")
+        || m == "gpt-5-1"
+    {
+        return CodexRate {
+            input: 1.25,
+            cached_input: 0.125,
+            output: 10.00,
+        };
+    }
+    if m.contains("gpt-5-codex") || m.contains("gpt-5-chat-latest") || m == "gpt-5" {
+        return CodexRate {
+            input: 1.25,
+            cached_input: 0.125,
+            output: 10.00,
+        };
     }
 
-    // --- gpt-5.4 variants (must come BEFORE plain gpt-5.4) ---
+    // Internal Codex/ChatGPT labels observed in local JSONL. Preserve explicit
+    // rates so historical rows do not fall through when public SKU names move.
     if m.contains("gpt-5.4-mini") || m.contains("gpt-5-4-mini") {
-        return CodexRate { input: 0.75, cached_input: 0.075, output: 4.50 };
+        return CodexRate {
+            input: 0.75,
+            cached_input: 0.075,
+            output: 4.50,
+        };
     }
     if m.contains("gpt-5.4-nano") || m.contains("gpt-5-4-nano") {
-        return CodexRate { input: 0.20, cached_input: 0.02, output: 1.25 };
+        return CodexRate {
+            input: 0.20,
+            cached_input: 0.02,
+            output: 1.25,
+        };
     }
     if m.contains("gpt-5.4-pro") || m.contains("gpt-5-4-pro") {
-        // No cache pricing published — set cached == input (no discount).
-        return CodexRate { input: 30.00, cached_input: 30.00, output: 180.00 };
+        return CodexRate {
+            input: 30.00,
+            cached_input: 30.00,
+            output: 180.00,
+        };
     }
-
-    // --- gpt-5.5 variants (must come BEFORE plain gpt-5.5) ---
     if m.contains("gpt-5.5-pro") || m.contains("gpt-5-5-pro") {
-        return CodexRate { input: 30.00, cached_input: 30.00, output: 180.00 };
+        return CodexRate {
+            input: 30.00,
+            cached_input: 30.00,
+            output: 180.00,
+        };
     }
-
-    // --- Bare 5.4 / 5.5 families ---
     if m.contains("gpt-5.4") || m.contains("gpt-5-4") {
-        return CodexRate { input: 2.50, cached_input: 0.25, output: 15.00 };
+        return CodexRate {
+            input: 2.50,
+            cached_input: 0.25,
+            output: 15.00,
+        };
     }
     if m.contains("gpt-5.5") || m.contains("gpt-5-5") {
-        return CodexRate { input: 5.00, cached_input: 0.50, output: 30.00 };
+        return CodexRate {
+            input: 5.00,
+            cached_input: 0.50,
+            output: 30.00,
+        };
     }
-
-    // --- Specialized chat-latest (ChatGPT-equivalent passthrough) ---
     if m.contains("chat-latest") {
-        return CodexRate { input: 5.00, cached_input: 0.50, output: 30.00 };
+        return CodexRate {
+            input: 1.25,
+            cached_input: 0.125,
+            output: 10.00,
+        };
     }
-
-    // --- Legacy plain gpt-5 (predates 5.3/5.4/5.5 split) ---
-    if m == "gpt-5" || (m.starts_with("gpt-5-") && !m.contains("5.") && !m.contains("5-5")) {
-        return CodexRate { input: 1.75, cached_input: 0.175, output: 14.00 };
-    }
-
-    // --- Deprecated reasoning models (o3 / o4) ---
     if m.contains("o3") || m.contains("o4") {
-        return CodexRate { input: 5.00, cached_input: 0.50, output: 20.00 };
+        return CodexRate {
+            input: 5.00,
+            cached_input: 0.50,
+            output: 20.00,
+        };
     }
 
-    // --- Unknown / future model — default to gpt-5.5 (current Codex CLI default) ---
-    CodexRate { input: 5.00, cached_input: 0.50, output: 30.00 }
+    CodexRate {
+        input: 1.25,
+        cached_input: 0.125,
+        output: 10.00,
+    }
 }
-
 /// Cost for a single Claude message's token usage.
 pub fn claude_message_cost(
     model: &str,
@@ -224,30 +291,86 @@ mod tests {
     }
 
     // --- Opus generation routing ---
-    #[test] fn opus_45_is_new_pricing() { approx(claude_rate("claude-opus-4-5-20250929").input, 5.00); }
-    #[test] fn opus_46_is_new_pricing() { approx(claude_rate("claude-opus-4-6-20251115").input, 5.00); }
-    #[test] fn opus_47_is_new_pricing() { approx(claude_rate("claude-opus-4-7-20260301").input, 5.00); }
-    #[test] fn opus_48_is_new_pricing() { approx(claude_rate("claude-opus-4-8-20260501").input, 5.00); }
-    #[test] fn opus_41_is_legacy_pricing() { approx(claude_rate("claude-opus-4-1-20250805").input, 15.00); }
-    #[test] fn opus_4_is_legacy_pricing() { approx(claude_rate("claude-opus-4-20250514").input, 15.00); }
-    #[test] fn opus_3_is_legacy_pricing() { approx(claude_rate("claude-3-opus-20240229").input, 15.00); }
-    #[test] fn opus_45_output_25() { approx(claude_rate("claude-opus-4-5").output, 25.00); }
-    #[test] fn opus_41_output_75() { approx(claude_rate("claude-opus-4-1").output, 75.00); }
+    #[test]
+    fn opus_45_is_new_pricing() {
+        approx(claude_rate("claude-opus-4-5-20250929").input, 5.00);
+    }
+    #[test]
+    fn opus_46_is_new_pricing() {
+        approx(claude_rate("claude-opus-4-6-20251115").input, 5.00);
+    }
+    #[test]
+    fn opus_47_is_new_pricing() {
+        approx(claude_rate("claude-opus-4-7-20260301").input, 5.00);
+    }
+    #[test]
+    fn opus_48_is_new_pricing() {
+        approx(claude_rate("claude-opus-4-8-20260501").input, 5.00);
+    }
+    #[test]
+    fn opus_41_is_legacy_pricing() {
+        approx(claude_rate("claude-opus-4-1-20250805").input, 15.00);
+    }
+    #[test]
+    fn opus_4_is_legacy_pricing() {
+        approx(claude_rate("claude-opus-4-20250514").input, 15.00);
+    }
+    #[test]
+    fn opus_3_is_legacy_pricing() {
+        approx(claude_rate("claude-3-opus-20240229").input, 15.00);
+    }
+    #[test]
+    fn opus_45_output_25() {
+        approx(claude_rate("claude-opus-4-5").output, 25.00);
+    }
+    #[test]
+    fn opus_41_output_75() {
+        approx(claude_rate("claude-opus-4-1").output, 75.00);
+    }
 
     // --- Haiku generation routing ---
-    #[test] fn haiku_45_is_new_pricing() { approx(claude_rate("claude-haiku-4-5-20251001").input, 1.00); }
-    #[test] fn haiku_45_output_5() { approx(claude_rate("claude-haiku-4-5").output, 5.00); }
-    #[test] fn haiku_35_is_legacy_pricing() { approx(claude_rate("claude-3-5-haiku-20241022").input, 0.80); }
-    #[test] fn haiku_35_output_4() { approx(claude_rate("claude-3-5-haiku-20241022").output, 4.00); }
+    #[test]
+    fn haiku_45_is_new_pricing() {
+        approx(claude_rate("claude-haiku-4-5-20251001").input, 1.00);
+    }
+    #[test]
+    fn haiku_45_output_5() {
+        approx(claude_rate("claude-haiku-4-5").output, 5.00);
+    }
+    #[test]
+    fn haiku_35_is_legacy_pricing() {
+        approx(claude_rate("claude-3-5-haiku-20241022").input, 0.80);
+    }
+    #[test]
+    fn haiku_35_output_4() {
+        approx(claude_rate("claude-3-5-haiku-20241022").output, 4.00);
+    }
 
     // --- Sonnet routing (unchanged across 4 / 4.5 / 4.6) ---
-    #[test] fn sonnet_45() { approx(claude_rate("claude-sonnet-4-5-20250929").input, 3.00); }
-    #[test] fn sonnet_46() { approx(claude_rate("claude-sonnet-4-6").input, 3.00); }
-    #[test] fn sonnet_4_deprecated() { approx(claude_rate("claude-sonnet-4-20250514").input, 3.00); }
+    #[test]
+    fn sonnet_45() {
+        approx(claude_rate("claude-sonnet-4-5-20250929").input, 3.00);
+    }
+    #[test]
+    fn sonnet_46() {
+        approx(claude_rate("claude-sonnet-4-6").input, 3.00);
+    }
+    #[test]
+    fn sonnet_4_deprecated() {
+        approx(claude_rate("claude-sonnet-4-20250514").input, 3.00);
+    }
 
     // --- Cache multipliers ---
-    #[test] fn cache_read_is_10pct() { let r = claude_rate("claude-opus-4-5"); approx(r.cache_read, 0.5); }
-    #[test] fn cache_write_is_125pct() { let r = claude_rate("claude-opus-4-5"); approx(r.cache_write, 6.25); }
+    #[test]
+    fn cache_read_is_10pct() {
+        let r = claude_rate("claude-opus-4-5");
+        approx(r.cache_read, 0.5);
+    }
+    #[test]
+    fn cache_write_is_125pct() {
+        let r = claude_rate("claude-opus-4-5");
+        approx(r.cache_write, 6.25);
+    }
 
     // --- Composite cost calculation: 1M input + 100k output on Opus 4.5 ---
     #[test]
@@ -282,38 +405,143 @@ mod tests {
     // ================================================================
 
     // --- gpt-5.5 family ---
-    #[test] fn gpt_55_pricing() { let r = codex_rate("gpt-5.5"); approx(r.input, 5.00); approx(r.cached_input, 0.50); approx(r.output, 30.00); }
-    #[test] fn gpt_55_pro_pricing() { let r = codex_rate("gpt-5.5-pro"); approx(r.input, 30.00); approx(r.output, 180.00); }
+    #[test]
+    fn gpt_55_pricing() {
+        let r = codex_rate("gpt-5.5");
+        approx(r.input, 5.00);
+        approx(r.cached_input, 0.50);
+        approx(r.output, 30.00);
+    }
+    #[test]
+    fn gpt_55_pro_pricing() {
+        let r = codex_rate("gpt-5.5-pro");
+        approx(r.input, 30.00);
+        approx(r.output, 180.00);
+    }
+
+    // --- Current public OpenAI pricing rows ---
+    #[test]
+    fn gpt_52_codex_pricing() {
+        let r = codex_rate("gpt-5.2-codex");
+        approx(r.input, 1.75);
+        approx(r.cached_input, 0.175);
+        approx(r.output, 14.00);
+    }
+    #[test]
+    fn gpt_51_codex_pricing() {
+        let r = codex_rate("gpt-5.1-codex");
+        approx(r.input, 1.25);
+        approx(r.cached_input, 0.125);
+        approx(r.output, 10.00);
+    }
+    #[test]
+    fn gpt_5_public_pricing() {
+        let r = codex_rate("gpt-5");
+        approx(r.input, 1.25);
+        approx(r.cached_input, 0.125);
+        approx(r.output, 10.00);
+    }
+    #[test]
+    fn gpt_5_mini_pricing() {
+        let r = codex_rate("gpt-5-mini");
+        approx(r.input, 0.25);
+        approx(r.cached_input, 0.025);
+        approx(r.output, 2.00);
+    }
+    #[test]
+    fn gpt_5_nano_pricing() {
+        let r = codex_rate("gpt-5-nano");
+        approx(r.input, 0.05);
+        approx(r.cached_input, 0.005);
+        approx(r.output, 0.40);
+    }
+    #[test]
+    fn gpt_52_pro_pricing() {
+        let r = codex_rate("gpt-5.2-pro");
+        approx(r.input, 21.00);
+        approx(r.output, 168.00);
+    }
 
     // --- gpt-5.4 family (the bug we just fixed: was $5/$30, should be $2.50/$15) ---
-    #[test] fn gpt_54_pricing_fix() { let r = codex_rate("gpt-5.4"); approx(r.input, 2.50); approx(r.cached_input, 0.25); approx(r.output, 15.00); }
-    #[test] fn gpt_54_mini_pricing() { let r = codex_rate("gpt-5.4-mini"); approx(r.input, 0.75); approx(r.output, 4.50); }
-    #[test] fn gpt_54_nano_pricing() { let r = codex_rate("gpt-5.4-nano"); approx(r.input, 0.20); approx(r.output, 1.25); }
-    #[test] fn gpt_54_pro_pricing() { let r = codex_rate("gpt-5.4-pro"); approx(r.input, 30.00); approx(r.output, 180.00); }
+    #[test]
+    fn gpt_54_pricing_fix() {
+        let r = codex_rate("gpt-5.4");
+        approx(r.input, 2.50);
+        approx(r.cached_input, 0.25);
+        approx(r.output, 15.00);
+    }
+    #[test]
+    fn gpt_54_mini_pricing() {
+        let r = codex_rate("gpt-5.4-mini");
+        approx(r.input, 0.75);
+        approx(r.output, 4.50);
+    }
+    #[test]
+    fn gpt_54_nano_pricing() {
+        let r = codex_rate("gpt-5.4-nano");
+        approx(r.input, 0.20);
+        approx(r.output, 1.25);
+    }
+    #[test]
+    fn gpt_54_pro_pricing() {
+        let r = codex_rate("gpt-5.4-pro");
+        approx(r.input, 30.00);
+        approx(r.output, 180.00);
+    }
 
     // --- Codex CLI-specific SKUs ---
-    #[test] fn gpt_53_codex_pricing() { let r = codex_rate("gpt-5.3-codex"); approx(r.input, 1.75); approx(r.cached_input, 0.175); approx(r.output, 14.00); }
-    #[test] fn gpt_5_codex_legacy_alias() { let r = codex_rate("gpt-5-codex"); approx(r.input, 1.75); approx(r.output, 14.00); }
-    #[test] fn gpt_53_chat_pricing() { let r = codex_rate("gpt-5.3-chat"); approx(r.input, 1.75); approx(r.output, 14.00); }
+    #[test]
+    fn gpt_53_codex_pricing() {
+        let r = codex_rate("gpt-5.3-codex");
+        approx(r.input, 1.75);
+        approx(r.cached_input, 0.175);
+        approx(r.output, 14.00);
+    }
+    #[test]
+    fn gpt_5_codex_legacy_alias() {
+        let r = codex_rate("gpt-5-codex");
+        approx(r.input, 1.25);
+        approx(r.output, 10.00);
+    }
+    #[test]
+    fn gpt_53_chat_pricing() {
+        let r = codex_rate("gpt-5.3-chat");
+        approx(r.input, 1.75);
+        approx(r.output, 14.00);
+    }
 
     // --- Variant ordering: -mini / -nano / -pro must NOT fall into bare 5.4 ---
-    #[test] fn variant_does_not_collapse_into_bare_family() {
+    #[test]
+    fn variant_does_not_collapse_into_bare_family() {
         // bare 5.4 = $2.50, mini = $0.75 — if ordering broke these would equal
-        assert_ne!(codex_rate("gpt-5.4").input, codex_rate("gpt-5.4-mini").input);
-        assert_ne!(codex_rate("gpt-5.4").input, codex_rate("gpt-5.4-nano").input);
+        assert_ne!(
+            codex_rate("gpt-5.4").input,
+            codex_rate("gpt-5.4-mini").input
+        );
+        assert_ne!(
+            codex_rate("gpt-5.4").input,
+            codex_rate("gpt-5.4-nano").input
+        );
         assert_ne!(codex_rate("gpt-5.4").input, codex_rate("gpt-5.4-pro").input);
     }
 
     // --- Both dash and dot separators recognized ---
-    #[test] fn dash_separator_for_codex() {
+    #[test]
+    fn dash_separator_for_codex() {
         approx(codex_rate("gpt-5-3-codex").input, 1.75);
     }
-    #[test] fn dash_separator_for_54_mini() {
+    #[test]
+    fn dash_separator_for_54_mini() {
         approx(codex_rate("gpt-5-4-mini").input, 0.75);
     }
 
     // --- Specialized chat-latest passthrough ---
-    #[test] fn chat_latest_pricing() { let r = codex_rate("chat-latest"); approx(r.input, 5.00); approx(r.output, 30.00); }
+    #[test]
+    fn chat_latest_pricing() {
+        let r = codex_rate("chat-latest");
+        approx(r.input, 1.25);
+        approx(r.output, 10.00);
+    }
 
     // --- Composite cost: 1M input + 100k output on gpt-5.4 (the bug fix) ---
     #[test]
@@ -334,12 +562,12 @@ mod tests {
         approx(cost, 1.2425);
     }
 
-    // --- Unknown model defaults to gpt-5.5 pricing ---
+    // --- Unknown model defaults to current public GPT-5 pricing ---
     #[test]
     fn unknown_codex_model_defaults_to_55() {
         let r = codex_rate("gpt-future-2027");
-        approx(r.input, 5.00);
-        approx(r.output, 30.00);
+        approx(r.input, 1.25);
+        approx(r.output, 10.00);
     }
 
     // --- Reasoning tokens billed at output rate ---

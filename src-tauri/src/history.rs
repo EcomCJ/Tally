@@ -282,7 +282,6 @@ impl DailyUsage {
             && self.tokens.cache_write >= other.tokens.cache_write
             && self.tokens.cached_input >= other.tokens.cached_input
             && self.tokens.reasoning >= other.tokens.reasoning
-            && self.requests >= other.requests
     }
 }
 
@@ -420,5 +419,32 @@ mod tests {
 
         assert!(upsert_vendor_day(&mut slot, &repriced));
         assert_eq!(slot.unwrap().api_equiv, 25.0);
+    }
+
+    #[test]
+    fn daily_upsert_reprices_token_cost_even_if_request_count_drops() {
+        let original = DailyUsage {
+            tokens: DailyTokens {
+                input: 100,
+                output: 50,
+                cache_read: 20,
+                cache_write: 10,
+                cached_input: 0,
+                reasoning: 0,
+            },
+            requests: 10,
+            api_equiv: 75.0,
+        };
+        let repriced = DailyUsage {
+            requests: 5,
+            api_equiv: 25.0,
+            ..original.clone()
+        };
+        let mut slot = Some(original);
+
+        assert!(upsert_vendor_day(&mut slot, &repriced));
+        let updated = slot.unwrap();
+        assert_eq!(updated.requests, 10);
+        assert_eq!(updated.api_equiv, 25.0);
     }
 }
