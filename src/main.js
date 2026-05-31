@@ -316,7 +316,7 @@ async function refresh() {
 // a mid-transition measurement can't lock the window narrow.
 const WIDTH_BY_STATE = { collapsed: 272, expanded: 680, compact: 640, settings: 720 };
 const SOLO_WIDTH_BY_STATE = { expanded: 520, compact: 520 };
-const HEIGHT_PAD_BY_STATE = { collapsed: 4, expanded: 22, compact: 18, settings: 22 };
+const HEIGHT_PAD_BY_STATE = { collapsed: 4, expanded: 30, compact: 18, settings: 22 };
 function widthForState(stateKey) {
   return document.body.classList.contains("single-agent")
     ? (SOLO_WIDTH_BY_STATE[stateKey] || WIDTH_BY_STATE[stateKey])
