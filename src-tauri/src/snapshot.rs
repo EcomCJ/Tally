@@ -25,7 +25,7 @@ pub struct BrandSnapshot {
     pub weekly: WindowState,
     pub periods: std::collections::HashMap<String, PeriodView>,
     pub last_event_at: Option<DateTime<Utc>>,
-    /// Additional weekly quotas (Sonnet / Opus / Cowork / Claude Design).
+    /// Additional weekly quotas (Fable / Opus / Sonnet / Cowork / Claude Design).
     /// Only populated for Claude. Empty array for Codex.
     pub sub_quotas: Vec<SubQuotaView>,
     /// Anthropic extra-usage $ tracker. Null when not enabled.

@@ -292,6 +292,16 @@ fn parse_cli_usage_limits(raw: &str) -> Result<ClaudeLiveLimits> {
         .or_else(|| extract_percent_after("currentweekallmodels", &lines, &normalized))
         .or_else(|| extract_percent_after_compact("weeklylimits", panel))
         .or_else(|| extract_percent_after("weeklylimits", &lines, &normalized));
+    let fable = extract_percent_after_compact("currentweekfableonly", panel)
+        .or_else(|| extract_percent_after("currentweekfableonly", &lines, &normalized))
+        .or_else(|| extract_percent_after_compact("currentweekfable", panel))
+        .or_else(|| extract_percent_after("currentweekfable", &lines, &normalized))
+        .or_else(|| extract_percent_after_compact("fableonly", panel))
+        .or_else(|| extract_percent_after("fableonly", &lines, &normalized))
+        .or_else(|| extract_percent_after_compact("currentweekmythosonly", panel))
+        .or_else(|| extract_percent_after("currentweekmythosonly", &lines, &normalized))
+        .or_else(|| extract_percent_after_compact("mythosonly", panel))
+        .or_else(|| extract_percent_after("mythosonly", &lines, &normalized));
     let sonnet = extract_percent_after_compact("currentweeksonnetonly", panel)
         .or_else(|| extract_percent_after("currentweeksonnetonly", &lines, &normalized))
         .or_else(|| extract_percent_after_compact("currentweeksonnet", panel))
@@ -307,6 +317,16 @@ fn parse_cli_usage_limits(raw: &str) -> Result<ClaudeLiveLimits> {
         .or_else(|| extract_reset_after("currentweekallmodels", &lines, &normalized))
         .or_else(|| extract_reset_after_compact("weeklylimits", panel))
         .or_else(|| extract_reset_after("weeklylimits", &lines, &normalized));
+    let fable_reset = extract_reset_after_compact("currentweekfableonly", panel)
+        .or_else(|| extract_reset_after("currentweekfableonly", &lines, &normalized))
+        .or_else(|| extract_reset_after_compact("currentweekfable", panel))
+        .or_else(|| extract_reset_after("currentweekfable", &lines, &normalized))
+        .or_else(|| extract_reset_after_compact("fableonly", panel))
+        .or_else(|| extract_reset_after("fableonly", &lines, &normalized))
+        .or_else(|| extract_reset_after_compact("currentweekmythosonly", panel))
+        .or_else(|| extract_reset_after("currentweekmythosonly", &lines, &normalized))
+        .or_else(|| extract_reset_after_compact("mythosonly", panel))
+        .or_else(|| extract_reset_after("mythosonly", &lines, &normalized));
     let sonnet_reset = extract_reset_after_compact("currentweeksonnetonly", panel)
         .or_else(|| extract_reset_after("currentweeksonnetonly", &lines, &normalized))
         .or_else(|| extract_reset_after_compact("currentweeksonnet", panel))
@@ -315,6 +335,13 @@ fn parse_cli_usage_limits(raw: &str) -> Result<ClaudeLiveLimits> {
         .or_else(|| extract_reset_after("sonnetonly", &lines, &normalized));
 
     let mut sub_quotas = Vec::new();
+    if let Some(fable_percent) = fable {
+        sub_quotas.push(SubQuota {
+            label: "Fable only".to_string(),
+            utilization: fable_percent,
+            resets_at: fable_reset,
+        });
+    }
     if let Some(sonnet_percent) = sonnet {
         sub_quotas.push(SubQuota {
             label: "Sonnet only".to_string(),
@@ -484,6 +511,12 @@ fn compact_tail_after<'a>(compact: &'a str, label: &str) -> Option<&'a str> {
     let boundaries = [
         "currentsession",
         "currentweekallmodels",
+        "currentweekfableonly",
+        "currentweekfable",
+        "currentweekmythosonly",
+        "currentweekmythos",
+        "fableonly",
+        "mythosonly",
         "currentweeksonnetonly",
         "currentweeksonnet",
         "sonnetonly",
@@ -506,7 +539,7 @@ fn compact_tail_after<'a>(compact: &'a str, label: &str) -> Option<&'a str> {
 fn percent_from_line(line: &str) -> Option<f64> {
     let lower = line.to_lowercase();
     if lower.contains('|')
-        && ["opus", "sonnet", "haiku", "default"]
+        && ["fable", "mythos", "opus", "sonnet", "haiku", "default"]
             .iter()
             .any(|token| lower.contains(token))
     {
@@ -811,6 +844,42 @@ mod tests {
         assert_eq!(limits.sub_quotas[0].utilization, 0.0);
         assert!(limits.five_hour_resets_at.is_some());
         assert!(limits.weekly_resets_at.is_some());
+    }
+
+    #[test]
+    fn parses_fable_only_subquota() {
+        let limits = parse_cli_usage_limits(
+            r#"
+Plan usage limits  Max (5x)
+
+Current session
+Resets in 2 hr 58 min
+12% used
+
+Weekly limits
+
+All models
+Resets Sun 8:00 PM
+22% used
+
+Fable only
+Resets Sun 8:00 PM
+3% used
+
+Sonnet only
+You haven't used Sonnet yet
+0% used
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(limits.five_hour_percent, 12.0);
+        assert_eq!(limits.weekly_percent, 22.0);
+        assert_eq!(limits.sub_quotas.len(), 2);
+        assert_eq!(limits.sub_quotas[0].label, "Fable only");
+        assert_eq!(limits.sub_quotas[0].utilization, 3.0);
+        assert_eq!(limits.sub_quotas[1].label, "Sonnet only");
+        assert_eq!(limits.sub_quotas[1].utilization, 0.0);
     }
 
     #[test]

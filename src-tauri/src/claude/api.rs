@@ -8,8 +8,12 @@ pub(crate) struct UsageResponse {
     five_hour: Option<UsageWindow>,
     seven_day: Option<UsageWindow>,
     seven_day_oauth_apps: Option<UsageWindow>,
+    seven_day_fable: Option<UsageWindow>,
+    seven_day_mythos: Option<UsageWindow>,
     seven_day_opus: Option<UsageWindow>,
     seven_day_sonnet: Option<UsageWindow>,
+    fable: Option<UsageWindow>,
+    mythos: Option<UsageWindow>,
     seven_day_design: Option<UsageWindow>,
     seven_day_claude_design: Option<UsageWindow>,
     claude_design: Option<UsageWindow>,
@@ -55,8 +59,16 @@ pub(crate) fn live_limits_from_usage_response(
             });
         }
     };
-    push_q(&mut sub_quotas, "Sonnet", &body.seven_day_sonnet);
+    let fable = body
+        .seven_day_fable
+        .as_ref()
+        .or(body.fable.as_ref())
+        .or(body.seven_day_mythos.as_ref())
+        .or(body.mythos.as_ref())
+        .cloned();
+    push_q(&mut sub_quotas, "Fable", &fable);
     push_q(&mut sub_quotas, "Opus", &body.seven_day_opus);
+    push_q(&mut sub_quotas, "Sonnet", &body.seven_day_sonnet);
 
     let design = body
         .seven_day_design
@@ -120,6 +132,10 @@ mod tests {
                     "utilization": 26.0,
                     "resets_at": "2026-05-25T00:00:00Z"
                 },
+                "seven_day_fable": {
+                    "utilization": 2.5,
+                    "resets_at": "2026-05-25T00:00:00Z"
+                },
                 "seven_day_sonnet": {
                     "utilization": 4.0,
                     "resets_at": "2026-05-25T00:00:00Z"
@@ -146,6 +162,7 @@ mod tests {
         assert_eq!(limits.weekly_percent, 26.0);
         assert!(limits.five_hour_resets_at.is_some());
         assert!(limits.weekly_resets_at.is_some());
+        assert!(limits.sub_quotas.iter().any(|q| q.label == "Fable"));
         assert!(limits.sub_quotas.iter().any(|q| q.label == "Sonnet"));
         assert!(limits.sub_quotas.iter().any(|q| q.label == "Claude Design"));
         let extra = limits.extra_usage.unwrap();

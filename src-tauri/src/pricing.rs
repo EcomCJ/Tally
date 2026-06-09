@@ -1,5 +1,6 @@
 // Per-model pricing in USD per 1M tokens.
 // Source: https://platform.claude.com/docs/en/about-claude/pricing (verified 2026-05-25).
+// Fable 5 source: https://www.anthropic.com/claude/fable (verified 2026-06-09).
 // Cache-read is 10% of base input; cache-write (5-min ephemeral, the default)
 // is 125% of base input. Tally doesn't distinguish 5m vs 1h cache writes since
 // JSONL doesn't carry that bit — 5m is by far the more common default.
@@ -29,6 +30,8 @@ const fn rate(input: f64, output: f64) -> ModelRate {
 /// price drop is reflected and Haiku generations are billed correctly.
 ///
 /// Recognized SKU patterns (case-insensitive, substring match):
+/// - `claude-fable-5-*`, `claude-fable-5`, or observed `mythos` labels
+///   -> Fable/Mythos frontier rate ($10/$50)
 /// - `claude-opus-4-5-*` through `opus-4-9-*` and `opus-5-*` → new Opus
 /// - `claude-opus-4-1-*`, `opus-4-DATE`, bare `opus`, `claude-3-opus`
 ///   → legacy Opus (deprecated $15/$75)
@@ -38,6 +41,9 @@ const fn rate(input: f64, output: f64) -> ModelRate {
 /// - unknown → Sonnet rate (safest middle estimate)
 pub fn claude_rate(model: &str) -> ModelRate {
     let m = model.to_lowercase();
+    if m.contains("fable") || m.contains("mythos") {
+        return rate(10.00, 50.00);
+    }
     if m.contains("opus") {
         if has_modern_minor(&m, "opus") {
             // Opus 4.5 / 4.6 / 4.7 / 4.8 + future ≥4.5
@@ -288,6 +294,35 @@ mod tests {
 
     fn approx(a: f64, b: f64) {
         assert!((a - b).abs() < 1e-9, "expected ~{b}, got {a}");
+    }
+
+    // --- Fable/Mythos frontier routing ---
+    #[test]
+    fn fable_5_pricing() {
+        let r = claude_rate("claude-fable-5");
+        approx(r.input, 10.00);
+        approx(r.output, 50.00);
+    }
+
+    #[test]
+    fn mythos_label_uses_fable_rate() {
+        let r = claude_rate("claude-mythos-5");
+        approx(r.input, 10.00);
+        approx(r.output, 50.00);
+    }
+
+    #[test]
+    fn fable_cache_multipliers() {
+        let r = claude_rate("claude-fable-5");
+        approx(r.cache_read, 1.00);
+        approx(r.cache_write, 12.50);
+    }
+
+    #[test]
+    fn fable_5_composite_cost() {
+        // 1M input @ $10 = $10; 100k output @ $50 = $5; total = $15.
+        let cost = claude_message_cost("claude-fable-5", 1_000_000, 100_000, 0, 0);
+        approx(cost, 15.00);
     }
 
     // --- Opus generation routing ---
