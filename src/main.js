@@ -14,6 +14,8 @@ const DEFAULT_SETTINGS = {
   theme: "dark", // "dark" | "light" | "auto"
   claudeTier: "",
   codexTier:  "",
+  claudeMonthlyOverride: "",
+  codexMonthlyOverride: "",
   showTrayIcon: true,
   showTaskbarIcon: false,
   autoCheckUpdates: true,
@@ -42,7 +44,16 @@ function normalizeSettings(s) {
   if (!next.showTrayIcon && !next.showTaskbarIcon) {
     next.showTaskbarIcon = true;
   }
+  next.claudeMonthlyOverride = normalizeMonthlyOverride(next.claudeMonthlyOverride);
+  next.codexMonthlyOverride = normalizeMonthlyOverride(next.codexMonthlyOverride);
   return next;
+}
+
+function normalizeMonthlyOverride(value) {
+  if (value == null || value === "") return "";
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return "";
+  return String(Math.min(n, 9999));
 }
 
 // Days-in-period for proration. "today" is partial — we round up to 1 day.
@@ -112,6 +123,11 @@ function fmtMoney(n, digits = 2) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
+}
+
+function effectiveMonthlyCost(detected, override) {
+  const n = Number(override);
+  return Number.isFinite(n) && n >= 0 ? n : (detected || 0);
 }
 
 function fmtPct(p) {
@@ -265,8 +281,11 @@ function render(snap) {
   el("roiMtd").textContent       = fmtMoney(r.mtd_api_equiv, 0);
   const daily = r.mtd_days_elapsed > 0 ? r.mtd_api_equiv / r.mtd_days_elapsed : 0;
   el("roiMtdSub").textContent    = r.mtd_days_elapsed + " days · " + fmtMoney(daily, 0) + "/day avg";
-  el("roiSubs").textContent      = fmtMoney(r.subscriptions, 0);
-  el("roiSubsBreakdown").textContent = fmtMoney(r.claude_monthly, 0) + " Claude + " + fmtMoney(r.codex_monthly, 0) + " Codex";
+  const claudeMonthly = effectiveMonthlyCost(r.claude_monthly, settings.claudeMonthlyOverride);
+  const codexMonthly = effectiveMonthlyCost(r.codex_monthly, settings.codexMonthlyOverride);
+  const subscriptions = claudeMonthly + codexMonthly;
+  el("roiSubs").textContent      = fmtMoney(subscriptions, 0);
+  el("roiSubsBreakdown").textContent = fmtMoney(claudeMonthly, 0) + " Claude + " + fmtMoney(codexMonthly, 0) + " Codex";
 
   // ROI leverage:
   //  - "Now" view → MTD spend vs MTD-prorated sub (or full monthly if mode=monthly)
@@ -274,12 +293,12 @@ function render(snap) {
   const leverageEquiv = isNow ? r.mtd_api_equiv : leftEquiv;
   const leverageLabel = isNow ? "MTD" : (PERIOD_LABELS[currentPeriod] || "TODAY");
 
-  let leverageDenom = r.subscriptions; // legacy "monthly" mode
+  let leverageDenom = subscriptions; // legacy "monthly" mode
   if (settings.roiMode === "prorated") {
     const days = currentPeriod === "mtd" || isNow
       ? Math.max(1, r.mtd_days_elapsed || 1)
       : (PERIOD_DAYS[currentPeriod] || 30);
-    leverageDenom = (days / 30) * r.subscriptions;
+    leverageDenom = (days / 30) * subscriptions;
   }
 
   const periodLeverage = leverageDenom > 0 ? leverageEquiv / leverageDenom : 0;
@@ -357,12 +376,16 @@ async function fitWindowToContent() {
   if (runId !== fitRunId) return;
   void target.offsetHeight; // force layout at the final width before measuring height
   const rectHeight = target.getBoundingClientRect().height;
-  const h = Math.ceil(Math.max(
+  let h = Math.ceil(Math.max(
     rectHeight,
     target.scrollHeight,
     document.body.scrollHeight,
     document.documentElement.scrollHeight
   ) + (HEIGHT_PAD_BY_STATE[stateKey] || 0));
+  if (stateKey === "settings") {
+    const maxSettingsHeight = Math.max(520, Math.min(680, (window.screen?.availHeight || 760) - 96));
+    h = Math.min(h, maxSettingsHeight);
+  }
   if (h < 50) return;
   try { await invoke("set_window_size", { width, height: h }); } catch (e) {}
 }
@@ -396,7 +419,7 @@ async function collapse() {
 async function showSettings() {
   document.body.classList.remove("state-collapsed", "state-expanded", "state-compact");
   document.body.classList.add("state-settings");
-  try { await invoke("set_window_size", { width: WIDTH_BY_STATE.settings, height: 540 }); } catch (e) {}
+  try { await invoke("set_window_size", { width: WIDTH_BY_STATE.settings, height: 640 }); } catch (e) {}
   scheduleFitWindowToContent(50);
 }
 
@@ -502,6 +525,10 @@ function applySettings() {
   if (claudeTierInput) claudeTierInput.value = settings.claudeTier;
   const codexTierInput  = el("optCodexTier");
   if (codexTierInput)  codexTierInput.value  = settings.codexTier;
+  const claudeCostInput = el("optClaudeMonthly");
+  if (claudeCostInput) claudeCostInput.value = settings.claudeMonthlyOverride;
+  const codexCostInput = el("optCodexMonthly");
+  if (codexCostInput) codexCostInput.value = settings.codexMonthlyOverride;
   void applyShellVisibility();
 }
 
@@ -627,6 +654,16 @@ function wireSettings() {
   el("optCodexTier")?.addEventListener("input", (e) => {
     settings.codexTier = e.target.value;
     saveSettings(settings);
+  });
+  el("optClaudeMonthly")?.addEventListener("input", (e) => {
+    settings.claudeMonthlyOverride = e.target.value;
+    saveSettings(settings);
+    if (lastSnapshot) render(lastSnapshot);
+  });
+  el("optCodexMonthly")?.addEventListener("input", (e) => {
+    settings.codexMonthlyOverride = e.target.value;
+    saveSettings(settings);
+    if (lastSnapshot) render(lastSnapshot);
   });
   el("btnResetDefaults")?.addEventListener("click", () => {
     settings = normalizeSettings({});

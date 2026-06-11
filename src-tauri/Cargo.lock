@@ -3234,7 +3234,7 @@ dependencies = [
 
 [[package]]
 name = "tally"
-version = "0.1.60"
+version = "0.1.61"
 dependencies = [
  "anyhow",
  "chrono",
