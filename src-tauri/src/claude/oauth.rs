@@ -195,10 +195,23 @@ pub(crate) fn active_account_identity() -> Option<AccountIdentity> {
 }
 
 fn active_auth_status_identity() -> Option<AccountIdentity> {
-    let mut cmd = Command::new("claude");
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/C", "claude", "auth", "status", "--json"]);
+        cmd
+    };
+
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut cmd = Command::new("claude");
+        cmd.args(["auth", "status", "--json"]);
+        cmd
+    };
+
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let output = cmd.args(["auth", "status", "--json"]).output().ok()?;
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
