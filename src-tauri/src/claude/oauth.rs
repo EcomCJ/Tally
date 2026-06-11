@@ -26,11 +26,19 @@ use std::os::windows::process::CommandExt;
 
 #[derive(Debug, Deserialize)]
 struct ProfileResponse {
+    account: Option<ProfileAccount>,
     organization: Option<ProfileOrg>,
 }
 
 #[derive(Debug, Deserialize)]
+struct ProfileAccount {
+    uuid: Option<String>,
+    email: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ProfileOrg {
+    uuid: Option<String>,
     rate_limit_tier: Option<String>,
 }
 
@@ -74,6 +82,13 @@ struct RefreshResponse {
     expires_in: Option<i64>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct CachedProfileIdentity {
+    token_key: String,
+    account: AccountIdentity,
+    ts: i64,
+}
+
 /// Returns the Claude config root, honoring the `CLAUDE_HOME` env var the same
 /// way Codex honors `CODEX_HOME`. Defaults to `~/.claude/`. Lets users with
 /// non-standard installs (relocated home, sandboxed CI runners, etc.) point
@@ -92,6 +107,14 @@ fn claude_home_dir() -> Result<PathBuf> {
 
 fn credentials_path() -> Result<PathBuf> {
     Ok(claude_home_dir()?.join(".credentials.json"))
+}
+
+fn profile_identity_cache_path() -> Option<PathBuf> {
+    let mut p = dirs::cache_dir()?;
+    p.push("tally");
+    let _ = std::fs::create_dir_all(&p);
+    p.push("claude-account.json");
+    Some(p)
 }
 
 fn read_credentials() -> Result<(PathBuf, CredentialsFile)> {
@@ -183,9 +206,18 @@ pub(crate) fn read_oauth_token() -> Result<String> {
 }
 
 pub(crate) fn active_account_identity() -> Option<AccountIdentity> {
-    if let Some(identity) = active_auth_status_identity() {
-        return Some(identity);
+    let token_identity = credential_token_identity();
+    if let Some(token_id) = token_identity.as_ref() {
+        if let Some(profile_id) = read_cached_profile_identity(token_id) {
+            return Some(profile_id);
+        }
+        return token_identity;
     }
+
+    active_auth_status_identity()
+}
+
+fn credential_token_identity() -> Option<AccountIdentity> {
     let (_, creds) = read_credentials().ok()?;
     crate::account::token_identity(
         "claude",
@@ -194,7 +226,83 @@ pub(crate) fn active_account_identity() -> Option<AccountIdentity> {
     )
 }
 
-fn active_auth_status_identity() -> Option<AccountIdentity> {
+fn token_account_identity(token: &str) -> Option<AccountIdentity> {
+    crate::account::token_identity("claude", token, "claude-oauth-token")
+}
+
+fn read_cached_profile_identity(token_identity: &AccountIdentity) -> Option<AccountIdentity> {
+    let path = profile_identity_cache_path()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let cached: CachedProfileIdentity = serde_json::from_str(&raw).ok()?;
+    if cached.token_key == token_identity.key {
+        Some(cached.account)
+    } else {
+        None
+    }
+}
+
+fn write_cached_profile_identity(token_identity: &AccountIdentity, account: &AccountIdentity) {
+    let Some(path) = profile_identity_cache_path() else {
+        return;
+    };
+    let payload = CachedProfileIdentity {
+        token_key: token_identity.key.clone(),
+        account: account.clone(),
+        ts: Utc::now().timestamp(),
+    };
+    if let Ok(body) = serde_json::to_string(&payload) {
+        let _ = std::fs::write(path, body);
+    }
+}
+
+fn profile_account_identity(profile: &ProfileResponse) -> Option<AccountIdentity> {
+    let mut parts = Vec::new();
+    if let Some(org_id) = profile
+        .organization
+        .as_ref()
+        .and_then(|org| org.uuid.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        parts.push(format!("org:{org_id}"));
+    }
+    if let Some(account_id) = profile
+        .account
+        .as_ref()
+        .and_then(|acct| acct.uuid.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        parts.push(format!("account:{account_id}"));
+    }
+    if let Some(email) = profile
+        .account
+        .as_ref()
+        .and_then(|acct| acct.email.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        parts.push(format!("email:{}", email.to_ascii_lowercase()));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    crate::account::explicit_identity("claude", &parts.join("|"), "claude-oauth-profile")
+}
+
+fn fetch_oauth_profile(token: &str) -> Result<ProfileResponse> {
+    let resp = ureq::get("https://api.anthropic.com/api/oauth/profile")
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("anthropic-version", "2023-06-01")
+        .set("anthropic-beta", "oauth-2025-04-20")
+        .timeout(std::time::Duration::from_secs(8))
+        .call()
+        .map_err(|e| anyhow!("call /api/oauth/profile: {e}"))?;
+    resp.into_json()
+        .map_err(|e| anyhow!("decode profile response: {e}"))
+}
+
+pub(super) fn active_auth_status_identity() -> Option<AccountIdentity> {
     #[cfg(windows)]
     let mut cmd = {
         let mut cmd = Command::new("cmd.exe");
@@ -295,16 +403,13 @@ pub fn fetch_plan_tier() -> Result<String> {
         }
     }
     let token = read_oauth_token()?;
-    let resp = ureq::get("https://api.anthropic.com/api/oauth/profile")
-        .set("Authorization", &format!("Bearer {token}"))
-        .set("anthropic-version", "2023-06-01")
-        .set("anthropic-beta", "oauth-2025-04-20")
-        .timeout(std::time::Duration::from_secs(8))
-        .call()
-        .map_err(|e| anyhow!("call /api/oauth/profile: {e}"))?;
-    let body: ProfileResponse = resp
-        .into_json()
-        .map_err(|e| anyhow!("decode profile response: {e}"))?;
+    let token_identity = token_account_identity(&token);
+    let body = fetch_oauth_profile(&token)?;
+    let profile_identity = profile_account_identity(&body);
+    if let (Some(token_id), Some(profile_id)) = (token_identity.as_ref(), profile_identity.as_ref())
+    {
+        write_cached_profile_identity(token_id, profile_id);
+    }
     let tier = body
         .organization
         .and_then(|o| o.rate_limit_tier)
@@ -324,6 +429,21 @@ pub(crate) fn http_fetch_live_limits() -> FetchOutcome {
     let token = match read_oauth_token() {
         Ok(t) => t,
         Err(e) => return FetchOutcome::Other(e),
+    };
+    let token_identity = token_account_identity(&token);
+    let profile_identity = match fetch_oauth_profile(&token) {
+        Ok(profile) => {
+            let identity = profile_account_identity(&profile);
+            if let (Some(token_id), Some(profile_id)) = (token_identity.as_ref(), identity.as_ref())
+            {
+                write_cached_profile_identity(token_id, profile_id);
+            }
+            identity
+        }
+        Err(e) => {
+            eprintln!("[tally] claude OAuth profile identity failed ({e}); using token identity");
+            None
+        }
     };
     let user_agent = format!("claude-code/{}", claude_code_version());
     let result = ureq::get("https://api.anthropic.com/api/oauth/usage")
@@ -351,7 +471,9 @@ pub(crate) fn http_fetch_live_limits() -> FetchOutcome {
     };
 
     let mut live = live_limits_from_usage_response(body, ClaudeLimitSource::Oauth);
-    live.account = active_account_identity();
+    live.account = profile_identity
+        .or(token_identity)
+        .or_else(active_auth_status_identity);
     FetchOutcome::Ok(live)
 }
 

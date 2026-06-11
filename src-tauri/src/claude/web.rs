@@ -48,10 +48,10 @@ pub(crate) fn web_fetch_live_limits() -> FetchOutcome {
         Err(e) => return FetchOutcome::Other(anyhow!("decode Claude web usage: {e}")),
     };
 
-    FetchOutcome::Ok(live_limits_from_usage_response(
-        body,
-        ClaudeLimitSource::Web,
-    ))
+    let mut live = live_limits_from_usage_response(body, ClaudeLimitSource::Web);
+    live.account =
+        crate::account::explicit_identity("claude", &format!("org:{org_id}"), "claude-web-org");
+    FetchOutcome::Ok(live)
 }
 
 fn read_web_cookie_header() -> Option<String> {

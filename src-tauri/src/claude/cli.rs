@@ -1,3 +1,4 @@
+use super::oauth::active_auth_status_identity;
 use super::{ClaudeLimitSource, ClaudeLiveLimits, SubQuota};
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Datelike, Duration, Local, NaiveTime, TimeZone, Utc, Weekday};
@@ -170,11 +171,13 @@ fn fetch_cli_usage_limits_once(timeout: StdDuration) -> Result<ClaudeLiveLimits>
         dump_cli_output_tail(&output);
     }
 
-    parse_cli_usage_limits(&output).inspect_err(|_| {
+    let mut limits = parse_cli_usage_limits(&output).inspect_err(|_| {
         if std::env::var_os("TALLY_CLAUDE_DEBUG_CLI_OUTPUT").is_some() {
             dump_cli_output_tail(&output);
         }
-    })
+    })?;
+    limits.account = active_auth_status_identity();
+    Ok(limits)
 }
 
 fn dump_cli_output_tail(output: &str) {

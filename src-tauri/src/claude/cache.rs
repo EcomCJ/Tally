@@ -260,16 +260,17 @@ pub fn fetch_live_limits(refresh_ms: u64) -> Result<ClaudeLiveLimits> {
             if fresh.account.is_none() {
                 fresh.account = active_account.clone();
             }
+            let fresh_account_key = fresh.account.as_ref().map(|id| id.key.as_str());
             let mut guard = cache().lock().unwrap();
             *guard = Some(CacheEntry {
-                account_key: active_account_key.map(|s| s.to_string()),
+                account_key: fresh_account_key.map(|s| s.to_string()),
                 fetched_at: Instant::now(),
                 value: fresh.clone(),
                 cooldown_until: cooldown_after_success,
                 last_error: None,
             });
             drop(guard);
-            write_disk_cache(&fresh, active_account_key);
+            write_disk_cache(&fresh, fresh_account_key);
             record_limit_sample(&fresh);
             Ok(fresh)
         }
