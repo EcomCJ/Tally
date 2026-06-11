@@ -50,7 +50,8 @@ function normalizeSettings(s) {
 }
 
 function normalizeMonthlyOverride(value) {
-  if (value == null || value === "") return "";
+  value = String(value ?? "").trim();
+  if (value === "") return "";
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return "";
   return String(Math.min(n, 9999));
@@ -126,6 +127,8 @@ function fmtMoney(n, digits = 2) {
 }
 
 function effectiveMonthlyCost(detected, override) {
+  override = String(override ?? "").trim();
+  if (override === "") return detected || 0;
   const n = Number(override);
   return Number.isFinite(n) && n >= 0 ? n : (detected || 0);
 }
