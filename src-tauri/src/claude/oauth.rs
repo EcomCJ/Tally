@@ -3,6 +3,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use super::api::{live_limits_from_usage_response, UsageResponse};
 use super::cache::disk_cache_path;
@@ -17,6 +18,11 @@ const CLAUDE_OAUTH_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token
 // Refresh proactively when within this many seconds of expiry so the next
 // HTTP call always carries a fresh token (no wasted 401 round-trip).
 const TOKEN_REFRESH_MARGIN_SECS: i64 = 60;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 #[derive(Debug, Deserialize)]
 struct ProfileResponse {
@@ -26,6 +32,16 @@ struct ProfileResponse {
 #[derive(Debug, Deserialize)]
 struct ProfileOrg {
     rate_limit_tier: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthStatus {
+    logged_in: bool,
+    email: Option<String>,
+    org_id: Option<String>,
+    subscription_type: Option<String>,
+    auth_method: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -167,12 +183,66 @@ pub(crate) fn read_oauth_token() -> Result<String> {
 }
 
 pub(crate) fn active_account_identity() -> Option<AccountIdentity> {
+    if let Some(identity) = active_auth_status_identity() {
+        return Some(identity);
+    }
     let (_, creds) = read_credentials().ok()?;
     crate::account::token_identity(
         "claude",
         &creds.claude_ai_oauth.access_token,
         "claude-oauth-token",
     )
+}
+
+fn active_auth_status_identity() -> Option<AccountIdentity> {
+    let mut cmd = Command::new("claude");
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let output = cmd.args(["auth", "status", "--json"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let status: AuthStatus = serde_json::from_slice(&output.stdout).ok()?;
+    if !status.logged_in {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if let Some(org_id) = status
+        .org_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        parts.push(format!("org:{org_id}"));
+    }
+    if let Some(email) = status
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        parts.push(format!("email:{}", email.to_ascii_lowercase()));
+    }
+    if parts.is_empty() {
+        if let Some(method) = status
+            .auth_method
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            parts.push(format!("auth:{method}"));
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let raw = parts.join("|");
+    let source = status
+        .subscription_type
+        .as_deref()
+        .map(|sub| format!("claude-auth-status:{sub}"))
+        .unwrap_or_else(|| "claude-auth-status".to_string());
+    crate::account::explicit_identity("claude", &raw, &source)
 }
 
 /// Lightweight availability probe: does a parseable credentials file with an
