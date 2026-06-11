@@ -160,6 +160,12 @@ function setFreshness(elementId, iso, source = null) {
   e.classList.add(cls);
 }
 
+function sourceWithAccount(source, account) {
+  const label = account?.label;
+  if (!label) return source;
+  return source ? `${source} · ${label}` : label;
+}
+
 function setRing(circleId, pct) {
   const c = el(circleId);
   if (!c) return;
@@ -238,7 +244,7 @@ function render(snap) {
   // must not mask the actual subscription/account tier.
   if (showClaude) {
     el("claudeTier").textContent = c.tier;
-    setFreshness("claudeFreshness", c.data_updated_at || c.last_event_at, c.data_source);
+    setFreshness("claudeFreshness", c.data_updated_at || c.last_event_at, sourceWithAccount(c.data_source, c.account));
     setRing("claudeRing5h", c.five_hour.used_percent);
     setRing("claudeRingWk", c.weekly.used_percent);
     el("claudePct5h").textContent = fmtPct(c.five_hour.used_percent);
@@ -256,7 +262,7 @@ function render(snap) {
   }
   if (showCodex) {
     el("codexTier").textContent  = x.tier;
-    setFreshness("codexFreshness",  x.data_updated_at || x.last_event_at, x.data_source);
+    setFreshness("codexFreshness",  x.data_updated_at || x.last_event_at, sourceWithAccount(x.data_source, x.account));
     setRing("codexRing5h",  x.five_hour.used_percent);
     setRing("codexRingWk",  x.weekly.used_percent);
     el("codexPct5h").textContent  = fmtPct(x.five_hour.used_percent);

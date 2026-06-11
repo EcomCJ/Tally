@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Datelike, Utc};
 use serde::Serialize;
 
+use crate::account::AccountIdentity;
 use crate::{claude, codex, plans};
 
 #[derive(Debug, Serialize)]
@@ -18,6 +19,7 @@ pub struct UsageSnapshot {
 pub struct BrandSnapshot {
     pub name: String,
     pub tier: String,
+    pub account: Option<AccountIdentity>,
     pub color: String,
     pub data_source: Option<String>,
     pub data_updated_at: Option<DateTime<Utc>>,
@@ -203,6 +205,7 @@ pub fn build(refresh_ms: u64) -> Result<UsageSnapshot> {
         Some(BrandSnapshot {
             name: "Claude Code".to_string(),
             tier: claude_plan.label.clone(),
+            account: claude_stats.account.clone(),
             color: "#D97757".to_string(),
             data_source: claude_stats.limit_source.map(|s| s.label().to_string()),
             data_updated_at: claude_stats.limit_fetched_at,
@@ -272,6 +275,7 @@ pub fn build(refresh_ms: u64) -> Result<UsageSnapshot> {
         Some(BrandSnapshot {
             name: "Codex".to_string(),
             tier: codex_plan.label.clone(),
+            account: codex_stats.account.clone(),
             color: "#10A37F".to_string(),
             data_source: None,
             data_updated_at: None,

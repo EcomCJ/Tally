@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use super::cli::fetch_cli_usage_limits;
 use super::history::record_limit_sample;
-use super::oauth::http_fetch_live_limits;
+use super::oauth::{active_account_identity, http_fetch_live_limits};
 use super::types::{ClaudeLimitSource, ClaudeLiveLimits, FetchOutcome};
 use super::web::web_fetch_live_limits;
 
@@ -14,6 +14,8 @@ const RATE_LIMIT_BACKOFF: std::time::Duration = std::time::Duration::from_secs(9
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct DiskCache {
+    #[serde(default)]
+    account_key: Option<String>,
     fetched_at_unix: i64,
     #[serde(default)]
     source: ClaudeLimitSource,
@@ -24,6 +26,7 @@ struct DiskCache {
 }
 
 struct CacheEntry {
+    account_key: Option<String>,
     fetched_at: Instant,
     value: ClaudeLiveLimits,
     cooldown_until: Option<Instant>,
@@ -32,30 +35,7 @@ struct CacheEntry {
 
 fn cache() -> &'static Mutex<Option<CacheEntry>> {
     static C: OnceLock<Mutex<Option<CacheEntry>>> = OnceLock::new();
-    C.get_or_init(|| {
-        let seed = read_disk_cache().map(|d| CacheEntry {
-            // Mark as old enough to refresh so the first call still tries live data.
-            fetched_at: Instant::now()
-                .checked_sub(std::time::Duration::from_secs(3600))
-                .unwrap_or_else(Instant::now),
-            value: ClaudeLiveLimits {
-                source: d.source,
-                fetched_at: Utc
-                    .timestamp_opt(d.fetched_at_unix, 0)
-                    .single()
-                    .unwrap_or_else(Utc::now),
-                five_hour_percent: d.five_hour_percent,
-                five_hour_resets_at: d.five_hour_resets_at,
-                weekly_percent: d.weekly_percent,
-                weekly_resets_at: d.weekly_resets_at,
-                sub_quotas: Vec::new(),
-                extra_usage: None,
-            },
-            cooldown_until: None,
-            last_error: None,
-        });
-        Mutex::new(seed)
-    })
+    C.get_or_init(|| Mutex::new(None))
 }
 
 pub(crate) fn disk_cache_path() -> Option<std::path::PathBuf> {
@@ -102,7 +82,7 @@ fn legacy_disk_cache_paths() -> Vec<std::path::PathBuf> {
     paths
 }
 
-fn read_disk_cache() -> Option<DiskCache> {
+fn read_disk_cache(active_account: Option<&str>) -> Option<DiskCache> {
     let mut paths = Vec::new();
     if let Some(path) = disk_cache_path() {
         paths.push(path);
@@ -115,15 +95,19 @@ fn read_disk_cache() -> Option<DiskCache> {
             Err(_) => continue,
         };
         if let Ok(cache) = serde_json::from_str::<DiskCache>(&s) {
+            if cache.account_key.as_deref() != active_account {
+                continue;
+            }
             return Some(cache);
         }
     }
     None
 }
 
-fn write_disk_cache(value: &ClaudeLiveLimits) {
+fn write_disk_cache(value: &ClaudeLiveLimits, account_key: Option<&str>) {
     if let Some(path) = disk_cache_path() {
         let d = DiskCache {
+            account_key: account_key.map(|s| s.to_string()),
             fetched_at_unix: value.fetched_at.timestamp(),
             source: value.source,
             five_hour_percent: value.five_hour_percent,
@@ -140,16 +124,47 @@ fn write_disk_cache(value: &ClaudeLiveLimits) {
 pub fn fetch_live_limits(refresh_ms: u64) -> Result<ClaudeLiveLimits> {
     let ttl = std::time::Duration::from_millis(refresh_ms).max(MIN_CACHE_TTL);
     let now_inst = Instant::now();
+    let active_account = active_account_identity();
+    let active_account_key = active_account.as_ref().map(|id| id.key.as_str());
     {
-        let guard = cache().lock().unwrap();
+        let mut guard = cache().lock().unwrap();
+        if guard.is_none() {
+            if let Some(d) = read_disk_cache(active_account_key) {
+                *guard = Some(CacheEntry {
+                    account_key: d.account_key.clone(),
+                    // Mark as old enough to refresh so the first call still tries live data.
+                    fetched_at: Instant::now()
+                        .checked_sub(std::time::Duration::from_secs(3600))
+                        .unwrap_or_else(Instant::now),
+                    value: ClaudeLiveLimits {
+                        account: active_account.clone(),
+                        source: d.source,
+                        fetched_at: Utc
+                            .timestamp_opt(d.fetched_at_unix, 0)
+                            .single()
+                            .unwrap_or_else(Utc::now),
+                        five_hour_percent: d.five_hour_percent,
+                        five_hour_resets_at: d.five_hour_resets_at,
+                        weekly_percent: d.weekly_percent,
+                        weekly_resets_at: d.weekly_resets_at,
+                        sub_quotas: Vec::new(),
+                        extra_usage: None,
+                    },
+                    cooldown_until: None,
+                    last_error: None,
+                });
+            }
+        }
         if let Some(entry) = guard.as_ref() {
-            if should_serve_cached(
-                now_inst,
-                entry.fetched_at,
-                entry.value.fetched_at,
-                entry.cooldown_until,
-                ttl,
-            ) {
+            if entry.account_key.as_deref() == active_account_key
+                && should_serve_cached(
+                    now_inst,
+                    entry.fetched_at,
+                    entry.value.fetched_at,
+                    entry.cooldown_until,
+                    ttl,
+                )
+            {
                 return Ok(entry.value.clone());
             }
         }
@@ -158,6 +173,7 @@ pub fn fetch_live_limits(refresh_ms: u64) -> Result<ClaudeLiveLimits> {
         let guard = cache().lock().unwrap();
         guard
             .as_ref()
+            .filter(|entry| entry.account_key.as_deref() == active_account_key)
             .and_then(|entry| entry.cooldown_until)
             .filter(|until| now_inst < *until)
     };
@@ -240,23 +256,30 @@ pub fn fetch_live_limits(refresh_ms: u64) -> Result<ClaudeLiveLimits> {
     };
 
     match outcome {
-        FetchOutcome::Ok(fresh) => {
+        FetchOutcome::Ok(mut fresh) => {
+            if fresh.account.is_none() {
+                fresh.account = active_account.clone();
+            }
             let mut guard = cache().lock().unwrap();
             *guard = Some(CacheEntry {
+                account_key: active_account_key.map(|s| s.to_string()),
                 fetched_at: Instant::now(),
                 value: fresh.clone(),
                 cooldown_until: cooldown_after_success,
                 last_error: None,
             });
             drop(guard);
-            write_disk_cache(&fresh);
+            write_disk_cache(&fresh, active_account_key);
             record_limit_sample(&fresh);
             Ok(fresh)
         }
         FetchOutcome::RateLimited(msg) => {
             eprintln!("[tally] {msg} - cooldown {}s", RATE_LIMIT_BACKOFF.as_secs());
             let mut guard = cache().lock().unwrap();
-            if let Some(entry) = guard.as_mut() {
+            if let Some(entry) = guard
+                .as_mut()
+                .filter(|entry| entry.account_key.as_deref() == active_account_key)
+            {
                 entry.fetched_at = Instant::now();
                 entry.cooldown_until = Some(Instant::now() + RATE_LIMIT_BACKOFF);
                 entry.last_error = Some(msg);
@@ -269,7 +292,10 @@ pub fn fetch_live_limits(refresh_ms: u64) -> Result<ClaudeLiveLimits> {
         }
         FetchOutcome::Other(e) => {
             let mut guard = cache().lock().unwrap();
-            if let Some(entry) = guard.as_mut() {
+            if let Some(entry) = guard
+                .as_mut()
+                .filter(|entry| entry.account_key.as_deref() == active_account_key)
+            {
                 eprintln!("[tally] claude live fetch failed ({e}); using cached value");
                 entry.fetched_at = Instant::now();
                 entry.last_error = Some(e.to_string());
@@ -402,6 +428,7 @@ mod tests {
     #[test]
     fn stale_oauth_active_window_requests_secondary_probe() {
         let value = ClaudeLiveLimits {
+            account: None,
             source: ClaudeLimitSource::Oauth,
             fetched_at: Utc::now(),
             five_hour_percent: 30.0,

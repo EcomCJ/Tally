@@ -29,9 +29,13 @@ pub fn fetch_live_limits(refresh_ms: u64) -> Result<ClaudeLiveLimits> {
 
 pub fn collect(refresh_ms: u64) -> Result<ClaudeStats> {
     let mut stats = jsonl::collect_token_stats()?;
+    stats.account = oauth::active_account_identity();
 
     match fetch_live_limits(refresh_ms) {
         Ok(live) => {
+            if live.account.is_some() {
+                stats.account = live.account.clone();
+            }
             stats.five_hour_percent = live.five_hour_percent;
             stats.weekly_percent = live.weekly_percent;
             stats.limit_source = Some(live.source);

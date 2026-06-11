@@ -8,6 +8,7 @@ use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, WebviewWindow, WindowEvent,
 };
 
+mod account;
 mod claude;
 mod codex;
 mod history;

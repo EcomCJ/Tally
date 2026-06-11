@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
 
+use crate::account::AccountIdentity;
+
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ClaudeLimitSource {
@@ -39,6 +41,7 @@ pub struct ExtraUsageInfo {
 
 #[derive(Debug, Clone)]
 pub struct ClaudeLiveLimits {
+    pub account: Option<AccountIdentity>,
     pub source: ClaudeLimitSource,
     pub fetched_at: DateTime<Utc>,
     pub five_hour_percent: f64,
@@ -52,6 +55,7 @@ pub struct ClaudeLiveLimits {
 impl Default for ClaudeLiveLimits {
     fn default() -> Self {
         Self {
+            account: None,
             source: ClaudeLimitSource::Cache,
             fetched_at: Utc::now(),
             five_hour_percent: 0.0,
@@ -81,6 +85,7 @@ pub struct PeriodStats {
 
 #[derive(Debug, Default, Clone)]
 pub struct ClaudeStats {
+    pub account: Option<AccountIdentity>,
     pub today: PeriodStats,
     pub d1: PeriodStats,
     pub d7: PeriodStats,

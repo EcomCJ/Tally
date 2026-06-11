@@ -105,6 +105,7 @@ pub(crate) fn live_limits_from_usage_response(
         .or(body.seven_day_oauth_apps.as_ref());
 
     ClaudeLiveLimits {
+        account: None,
         source,
         fetched_at: Utc::now(),
         five_hour_percent: session_window.map(|w| w.utilization).unwrap_or(0.0),

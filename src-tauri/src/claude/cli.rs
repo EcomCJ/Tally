@@ -351,6 +351,7 @@ fn parse_cli_usage_limits(raw: &str) -> Result<ClaudeLiveLimits> {
     }
 
     Ok(ClaudeLiveLimits {
+        account: None,
         source: ClaudeLimitSource::Cli,
         fetched_at: Utc::now(),
         five_hour_percent: session,

@@ -21,6 +21,8 @@ struct HistoryEntry<'a> {
 struct HistoryMarker {
     logged_at: DateTime<Utc>,
     local_date: String,
+    #[serde(default)]
+    account_signature: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -68,14 +70,16 @@ pub fn record_snapshot(snapshot: &UsageSnapshot) -> Result<bool> {
     let now = Utc::now();
     let local_now = Local::now();
     let local_date = local_now.format("%Y-%m-%d").to_string();
+    let account_signature = snapshot_account_signature(snapshot);
     let root = history_root()?;
     std::fs::create_dir_all(&root)?;
 
     let marker_path = root.join("last-write.json");
     if let Some(marker) = read_marker(&marker_path) {
         let same_day = marker.local_date == local_date;
+        let same_accounts = marker.account_signature == account_signature;
         let age = now.signed_duration_since(marker.logged_at).num_seconds();
-        if same_day && (0..MIN_HISTORY_INTERVAL_SECS).contains(&age) {
+        if same_day && same_accounts && (0..MIN_HISTORY_INTERVAL_SECS).contains(&age) {
             return Ok(false);
         }
     }
@@ -98,6 +102,7 @@ pub fn record_snapshot(snapshot: &UsageSnapshot) -> Result<bool> {
     let marker = serde_json::json!({
         "logged_at": now,
         "local_date": local_date,
+        "account_signature": account_signature,
     });
     std::fs::write(marker_path, serde_json::to_string_pretty(&marker)?)?;
     Ok(true)
@@ -287,6 +292,22 @@ impl DailyUsage {
         let existing = other.tokens.total_billable_units();
         existing >= 1_000_000 && incoming.saturating_mul(100) >= existing.saturating_mul(85)
     }
+}
+
+fn snapshot_account_signature(snapshot: &UsageSnapshot) -> String {
+    let claude = snapshot
+        .claude
+        .as_ref()
+        .and_then(|brand| brand.account.as_ref())
+        .map(|account| account.key.as_str())
+        .unwrap_or("claude:none");
+    let codex = snapshot
+        .codex
+        .as_ref()
+        .and_then(|brand| brand.account.as_ref())
+        .map(|account| account.key.as_str())
+        .unwrap_or("codex:none");
+    format!("{claude}|{codex}")
 }
 
 impl DailyTokens {

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use super::api::{live_limits_from_usage_response, UsageResponse};
 use super::cache::disk_cache_path;
 use super::types::{ClaudeLimitSource, FetchOutcome};
+use crate::account::AccountIdentity;
 
 // Anthropic's public Claude Code OAuth client. Same id baked into the
 // Claude Code CLI and Claude Desktop. Used for the refresh-token grant
@@ -165,6 +166,15 @@ pub(crate) fn read_oauth_token() -> Result<String> {
     ensure_fresh_access_token()
 }
 
+pub(crate) fn active_account_identity() -> Option<AccountIdentity> {
+    let (_, creds) = read_credentials().ok()?;
+    crate::account::token_identity(
+        "claude",
+        &creds.claude_ai_oauth.access_token,
+        "claude-oauth-token",
+    )
+}
+
 /// Lightweight availability probe: does a parseable credentials file with an
 /// access token exist on disk? Does NOT hit the network — refresh logic lives
 /// in `read_oauth_token` / `ensure_fresh_access_token` and only runs when we
@@ -182,6 +192,7 @@ pub(crate) fn has_credentials() -> bool {
 /// Fetch the user's Claude subscription tier identifier from /api/oauth/profile.
 /// Cached aggressively (24h) since it changes rarely.
 pub fn fetch_plan_tier() -> Result<String> {
+    let active_account = active_account_identity().map(|id| id.key);
     let cache_path = disk_cache_path().map(|mut p| {
         p.set_file_name("claude-plan.json");
         p
@@ -191,7 +202,8 @@ pub fn fetch_plan_tier() -> Result<String> {
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(&s) {
                 let ts = entry.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
                 let age = Utc::now().timestamp() - ts;
-                if age < 86_400 {
+                let cache_account = entry.get("account").and_then(|v| v.as_str());
+                if age < 86_400 && cache_account == active_account.as_deref() {
                     if let Some(t) = entry.get("tier").and_then(|v| v.as_str()) {
                         return Ok(t.to_string());
                     }
@@ -215,7 +227,11 @@ pub fn fetch_plan_tier() -> Result<String> {
         .and_then(|o| o.rate_limit_tier)
         .unwrap_or_else(|| "unknown".to_string());
     if let Some(p) = cache_path {
-        let payload = serde_json::json!({ "ts": Utc::now().timestamp(), "tier": tier });
+        let payload = serde_json::json!({
+            "ts": Utc::now().timestamp(),
+            "tier": tier,
+            "account": active_account,
+        });
         let _ = std::fs::write(p, payload.to_string());
     }
     Ok(tier)
@@ -251,10 +267,9 @@ pub(crate) fn http_fetch_live_limits() -> FetchOutcome {
         Err(e) => return FetchOutcome::Other(anyhow!("decode usage response: {e}")),
     };
 
-    FetchOutcome::Ok(live_limits_from_usage_response(
-        body,
-        ClaudeLimitSource::Oauth,
-    ))
+    let mut live = live_limits_from_usage_response(body, ClaudeLimitSource::Oauth);
+    live.account = active_account_identity();
+    FetchOutcome::Ok(live)
 }
 
 fn claude_code_version() -> String {

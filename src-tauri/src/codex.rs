@@ -10,6 +10,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration as StdDuration;
 use walkdir::WalkDir;
 
+use crate::account::AccountIdentity;
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 /// CREATE_NO_WINDOW (0x08000000) — suppresses the console flash when a GUI
@@ -108,6 +110,7 @@ pub struct CodexPeriodStats {
 
 #[derive(Debug, Default, Clone)]
 pub struct CodexStats {
+    pub account: Option<AccountIdentity>,
     pub today: CodexPeriodStats,
     pub d1: CodexPeriodStats,
     pub d7: CodexPeriodStats,
@@ -273,6 +276,22 @@ fn plan_label(plan_type: Option<&str>) -> String {
     crate::plans::codex_plan(plan_type.unwrap_or("prolite")).label
 }
 
+pub fn active_account_identity() -> Option<AccountIdentity> {
+    let (_, auth) = read_codex_auth_file().ok()?;
+    let tokens = auth.tokens?;
+    if let Some(account_id) = tokens.account_id.as_deref() {
+        if let Some(identity) =
+            crate::account::explicit_identity("codex", account_id, "chatgpt-account-id")
+        {
+            return Some(identity);
+        }
+    }
+    tokens
+        .access_token
+        .as_deref()
+        .and_then(|token| crate::account::token_identity("codex", token, "codex-oauth-token"))
+}
+
 /// Locate the codex executable. Windows doesn't auto-resolve .cmd/.exe shims
 /// when `Command::new("codex")` is invoked from a child process, so we have
 /// to find it explicitly. Order: PATH lookup via `where`, npm-global vendor
@@ -374,6 +393,7 @@ const MIN_CODEX_LIVE_TTL: StdDuration = StdDuration::from_secs(60);
 type LiveRateLimitsValue = (CodexRateLimits, String, String, DateTime<Utc>);
 
 struct LiveCacheEntry {
+    account_key: Option<String>,
     fetched_at: std::time::Instant,
     value: LiveRateLimitsValue,
 }
@@ -391,10 +411,14 @@ fn live_cache() -> &'static Mutex<Option<LiveCacheEntry>> {
 /// — single knob (`refresh_ms`) tied to the user's UI refresh interval.
 pub fn fetch_live_rate_limits(refresh_ms: u64) -> Result<LiveRateLimitsValue> {
     let ttl = StdDuration::from_millis(refresh_ms).max(MIN_CODEX_LIVE_TTL);
+    let active_account = active_account_identity();
+    let active_account_key = active_account.as_ref().map(|id| id.key.as_str());
     {
         let guard = live_cache().lock().unwrap();
         if let Some(entry) = guard.as_ref() {
-            if entry.fetched_at.elapsed() < ttl {
+            if entry.account_key.as_deref() == active_account_key
+                && entry.fetched_at.elapsed() < ttl
+            {
                 return Ok(entry.value.clone());
             }
         }
@@ -408,6 +432,7 @@ pub fn fetch_live_rate_limits(refresh_ms: u64) -> Result<LiveRateLimitsValue> {
     };
     let mut guard = live_cache().lock().unwrap();
     *guard = Some(LiveCacheEntry {
+        account_key: active_account_key.map(|s| s.to_string()),
         fetched_at: std::time::Instant::now(),
         value: result.clone(),
     });
@@ -622,7 +647,10 @@ fn token_cache() -> &'static Mutex<Option<(FileSignature, LocalTokenStats)>> {
 }
 
 pub fn collect(refresh_ms: u64) -> Result<CodexStats> {
-    let mut stats = CodexStats::default();
+    let mut stats = CodexStats {
+        account: active_account_identity(),
+        ..Default::default()
+    };
 
     // 1. Live rate limits via OAuth (fast path) → RPC (fallback), with the
     //    in-process cache honoring the user's refresh interval.
