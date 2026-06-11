@@ -12,8 +12,8 @@ const DEFAULT_SETTINGS = {
   refreshMs: 120_000,
   glassAlpha: 0.55,
   theme: "dark", // "dark" | "light" | "auto"
-  claudeTier: "MAX 5× · $100",
-  codexTier:  "PRO 5× · $100",
+  claudeTier: "",
+  codexTier:  "",
   showTrayIcon: true,
   showTaskbarIcon: false,
   autoCheckUpdates: true,
@@ -215,9 +215,10 @@ function render(snap) {
   });
   el("headLive").textContent = "LIVE";
 
-  // Tier labels respect user override from settings
+  // Tier labels are provider-detected. User text fields are notes only and
+  // must not mask the actual subscription/account tier.
   if (showClaude) {
-    el("claudeTier").textContent = settings.claudeTier || c.tier;
+    el("claudeTier").textContent = c.tier;
     setFreshness("claudeFreshness", c.data_updated_at || c.last_event_at, c.data_source);
     setRing("claudeRing5h", c.five_hour.used_percent);
     setRing("claudeRingWk", c.weekly.used_percent);
@@ -235,7 +236,7 @@ function render(snap) {
     }
   }
   if (showCodex) {
-    el("codexTier").textContent  = settings.codexTier  || x.tier;
+    el("codexTier").textContent  = x.tier;
     setFreshness("codexFreshness",  x.data_updated_at || x.last_event_at, x.data_source);
     setRing("codexRing5h",  x.five_hour.used_percent);
     setRing("codexRingWk",  x.weekly.used_percent);
@@ -622,14 +623,10 @@ function wireSettings() {
   el("optClaudeTier")?.addEventListener("input", (e) => {
     settings.claudeTier = e.target.value;
     saveSettings(settings);
-    const t = el("claudeTier");
-    if (t) t.textContent = settings.claudeTier || "MAX 5× · $100";
   });
   el("optCodexTier")?.addEventListener("input", (e) => {
     settings.codexTier = e.target.value;
     saveSettings(settings);
-    const t = el("codexTier");
-    if (t) t.textContent = settings.codexTier || "PRO 5× · $100";
   });
   el("btnResetDefaults")?.addEventListener("click", () => {
     settings = normalizeSettings({});
@@ -682,12 +679,6 @@ window.addEventListener("DOMContentLoaded", () => {
 
   wireSettings();
   applySettings(); // sets theme + opacity + interval timer from stored settings
-
-  // Apply persisted plan-label overrides immediately
-  const t1 = el("claudeTier");
-  if (t1 && settings.claudeTier) t1.textContent = settings.claudeTier;
-  const t2 = el("codexTier");
-  if (t2 && settings.codexTier) t2.textContent = settings.codexTier;
 
   void restoreViewMode();
   refresh();

@@ -270,14 +270,7 @@ fn save_codex_auth_tokens(path: &std::path::Path, tokens: &CodexAuthTokens) -> R
 }
 
 fn plan_label(plan_type: Option<&str>) -> String {
-    match plan_type {
-        Some("prolite") => "PRO 5x".to_string(),
-        Some("pro") => "PRO".to_string(),
-        Some("team") => "TEAM".to_string(),
-        Some("plus") => "PLUS".to_string(),
-        Some(other) => other.to_uppercase(),
-        None => "PRO 5x".to_string(),
-    }
+    crate::plans::codex_plan(plan_type.unwrap_or("prolite")).label
 }
 
 /// Locate the codex executable. Windows doesn't auto-resolve .cmd/.exe shims
@@ -532,14 +525,7 @@ fn fetch_rpc_rate_limits() -> Result<(CodexRateLimits, String, String, DateTime<
         rl.secondary_resets_at = s.resets_at.and_then(|ts| Utc.timestamp_opt(ts, 0).single());
     }
     let plan_type_raw = payload.plan_type.clone().unwrap_or_default();
-    let plan_label = match payload.plan_type.as_deref() {
-        Some("prolite") => "PRO 5×".to_string(),
-        Some("pro") => "PRO".to_string(),
-        Some("team") => "TEAM".to_string(),
-        Some("plus") => "PLUS".to_string(),
-        Some(other) => other.to_uppercase(),
-        None => "PRO 5×".to_string(),
-    };
+    let plan_label = plan_label(payload.plan_type.as_deref());
     Ok((rl, plan_label, plan_type_raw, Utc::now()))
 }
 
