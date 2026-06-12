@@ -5,6 +5,7 @@ use crate::account::AccountIdentity;
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ClaudeLimitSource {
+    Desktop,
     Oauth,
     Cli,
     Web,
@@ -15,6 +16,7 @@ pub enum ClaudeLimitSource {
 impl ClaudeLimitSource {
     pub fn label(self) -> &'static str {
         match self {
+            ClaudeLimitSource::Desktop => "Desktop",
             ClaudeLimitSource::Oauth => "OAuth",
             ClaudeLimitSource::Cli => "CLI",
             ClaudeLimitSource::Web => "Web",
@@ -123,6 +125,7 @@ mod tests {
 
     #[test]
     fn claude_limit_source_labels_match_ui_copy() {
+        assert_eq!(ClaudeLimitSource::Desktop.label(), "Desktop");
         assert_eq!(ClaudeLimitSource::Oauth.label(), "OAuth");
         assert_eq!(ClaudeLimitSource::Cli.label(), "CLI");
         assert_eq!(ClaudeLimitSource::Web.label(), "Web");

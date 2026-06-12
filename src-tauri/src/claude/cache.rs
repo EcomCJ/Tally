@@ -3,9 +3,11 @@ use chrono::{TimeZone, Utc};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
+use super::active_account_identity;
 use super::cli::fetch_cli_usage_limits;
+use super::desktop::desktop_fetch_live_limits;
 use super::history::record_limit_sample;
-use super::oauth::{active_account_identity, http_fetch_live_limits};
+use super::oauth::http_fetch_live_limits;
 use super::types::{ClaudeLimitSource, ClaudeLiveLimits, FetchOutcome};
 use super::web::web_fetch_live_limits;
 
@@ -192,7 +194,21 @@ pub fn fetch_live_limits(refresh_ms: u64) -> Result<ClaudeLiveLimits> {
                 )),
             })
     } else {
-        match http_fetch_live_limits() {
+        let primary = match desktop_fetch_live_limits() {
+            FetchOutcome::Other(desktop_err) => {
+                eprintln!(
+                    "[tally] claude Desktop usage failed ({desktop_err}); trying Claude Code OAuth"
+                );
+                match http_fetch_live_limits() {
+                    FetchOutcome::Other(oauth_err) => FetchOutcome::Other(anyhow!(
+                        "Desktop failed ({desktop_err}); OAuth failed ({oauth_err})"
+                    )),
+                    other => other,
+                }
+            }
+            other => other,
+        };
+        match primary {
             FetchOutcome::Ok(fresh) => {
                 if active_window_needs_secondary_probe(&fresh) {
                     eprintln!(

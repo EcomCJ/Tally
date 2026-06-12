@@ -3,6 +3,7 @@ use anyhow::Result;
 mod api;
 mod cache;
 mod cli;
+mod desktop;
 mod history;
 mod jsonl;
 mod oauth;
@@ -13,14 +14,18 @@ mod web;
 pub use types::{ClaudeLimitSource, ClaudeLiveLimits, ClaudeStats, PeriodStats, SubQuota};
 
 pub fn fetch_plan_tier() -> Result<String> {
-    oauth::fetch_plan_tier()
+    desktop::fetch_plan_tier().or_else(|_| oauth::fetch_plan_tier())
 }
 
 /// True if at least one Claude source can plausibly run.
 /// Uses file-presence checks only — never hits the network — so a transient
 /// refresh-token / API failure doesn't hide the Claude card.
 pub fn is_available() -> bool {
-    oauth::has_credentials() || cli::claude_cli_available()
+    desktop::has_credentials() || oauth::has_credentials() || cli::claude_cli_available()
+}
+
+pub(crate) fn active_account_identity() -> Option<crate::account::AccountIdentity> {
+    desktop::active_account_identity().or_else(oauth::active_account_identity)
 }
 
 pub fn fetch_live_limits(refresh_ms: u64) -> Result<ClaudeLiveLimits> {
@@ -29,7 +34,7 @@ pub fn fetch_live_limits(refresh_ms: u64) -> Result<ClaudeLiveLimits> {
 
 pub fn collect(refresh_ms: u64) -> Result<ClaudeStats> {
     let mut stats = jsonl::collect_token_stats()?;
-    stats.account = oauth::active_account_identity();
+    stats.account = active_account_identity();
 
     match fetch_live_limits(refresh_ms) {
         Ok(live) => {

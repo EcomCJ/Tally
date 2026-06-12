@@ -10,6 +10,7 @@ pub struct PlanInfo {
 /// Anthropic `rate_limit_tier` from /api/oauth/profile
 pub fn claude_plan(rate_limit_tier: &str) -> PlanInfo {
     match rate_limit_tier {
+        "default_claude_ai" => plan("PRO · $20", 20.0),
         "default_claude_pro" => plan("PRO · $20", 20.0),
         "default_claude_max_5x" => plan("MAX 5× · $100", 100.0),
         "default_claude_max_20x" => plan("MAX 20× · $200", 200.0),
@@ -47,6 +48,13 @@ fn plan(label: &str, cost: f64) -> PlanInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_ai_tier_is_pro_plan() {
+        let p = claude_plan("default_claude_ai");
+        assert_eq!(p.label, "PRO · $20");
+        assert_eq!(p.monthly_cost, 20.0);
+    }
 
     #[test]
     fn codex_prolite_is_5x_100() {

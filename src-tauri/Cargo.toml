@@ -1,6 +1,6 @@
 [package]
 name = "tally"
-version = "0.1.66"
+version = "0.1.67"
 edition = "2021"
 rust-version = "1.77"
 
@@ -23,6 +23,11 @@ anyhow = "1"
 ureq = { version = "2", features = ["tls", "json"], default-features = false }
 portable-pty = "0.9"
 regex = "1"
+aes-gcm = "0.10"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [profile.release]
 codegen-units = 1
